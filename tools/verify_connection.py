@@ -53,13 +53,13 @@ def check_upstox_token(token: str):
 
 def check_upstox_market_feed(token: str):
     print("\n[2/3] Checking Upstox Live Market Data API...")
-    url = "https://api.upstox.com/v2/historical-candle/intraday/NSE_INDEX%7CNifty%2050/3minute"
+    url = "https://api.upstox.com/v2/historical-candle/intraday/NSE_INDEX%7CNifty%2050/1minute"
     headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
     try:
         res = requests.get(url, headers=headers, timeout=8)
         if res.status_code == 200:
             candles = res.json().get("data", {}).get("candles", [])
-            print(f"  ✅ LIVE FEED CONNECTED: Intraday feed reachable (Loaded {len(candles)} 3m candles).")
+            print(f"  ✅ LIVE FEED CONNECTED: Intraday feed reachable (Loaded {len(candles)} 1m candles).")
             if candles:
                 latest_close = candles[0][4]
                 print(f"     Latest Nifty 50 Spot Level: {latest_close}")

@@ -1,10 +1,10 @@
 """
 Market Data Engine:
 - Connects directly to Upstox API v2/v3 for 100% REAL LIVE market data.
-- Fetches real 3-minute historical candles from Upstox Historical/Intraday REST APIs for indicator warmup.
+- Fetches real 1-minute historical candles from Upstox REST APIs and resamples to 3-minute OHLCV candles.
 - Connects to Upstox Market Data Feed V3 (MarketDataStreamerV3 / WebSocket) in 'full' mode.
 - Aggregates real live ticks into 3-minute OHLCV candles.
-- Polls live Upstox Option Chain to track real-time Open Interest (OI), Change in OI, and Option VWAP.
+- Auto-resolves active weekly expiry and polls live Upstox Option Chain to track Open Interest (OI) & Greeks.
 - Zero mock or dummy data. Real market feeds only.
 """
 
@@ -30,12 +30,14 @@ class MarketDataEngine:
         
         # Real-time data caches
         self.spot_ltp: float = 0.0
+        self.spot_open_price: float = 0.0
         self.spot_change: float = 0.0
         self.spot_change_pct: float = 0.0
         self.candles_3m: pd.DataFrame = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
         
         # Current subscribed instruments
         self.subscribed_keys: List[str] = [self.spot_instrument]
+        self.current_expiry_date: Optional[str] = None
         self.atm_ce_contract: Optional[Dict[str, Any]] = None
         self.atm_pe_contract: Optional[Dict[str, Any]] = None
         self.option_chain_data: List[Dict[str, Any]] = []
@@ -52,12 +54,15 @@ class MarketDataEngine:
         self._oi_poll_task: Optional[asyncio.Task] = None
 
     async def warm_up_historical_data(self):
-        """Fetches real historical 3-minute candles from Upstox REST API to prime indicators."""
-        logger.info(f"Connecting to Upstox API to fetch real historical 3m candles for {self.spot_instrument}...")
+        """
+        Fetches real historical 1-minute candles from Upstox REST API
+        and resamples them into 3-minute candles to prime indicators.
+        """
+        logger.info(f"Connecting to Upstox API to fetch real historical candles for {self.spot_instrument}...")
         instrument_encoded = self.spot_instrument.replace("|", "%7C")
         
-        # 1. First attempt: Today's intraday 3-minute candles
-        url_intraday = f"https://api.upstox.com/v2/historical-candle/intraday/{instrument_encoded}/3minute"
+        # 1. First attempt: Today's intraday 1-minute candles
+        url_intraday = f"https://api.upstox.com/v2/historical-candle/intraday/{instrument_encoded}/1minute"
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.access_token}"
@@ -70,19 +75,19 @@ class MarketDataEngine:
                     if resp.status == 200:
                         payload = await resp.json()
                         candles_raw = payload.get("data", {}).get("candles", [])
-                        logger.info(f"Upstox Intraday Candle API returned {len(candles_raw)} candles.")
+                        logger.info(f"Upstox Intraday Candle API returned {len(candles_raw)} 1-minute candles.")
                     else:
                         text = await resp.text()
                         logger.warning(f"Upstox intraday candle fetch returned HTTP {resp.status}: {text}")
         except Exception as e:
             logger.error(f"Error connecting to Upstox intraday candle endpoint: {e}")
 
-        # 2. If session just opened (fewer than 20 candles), fetch previous session candles to ensure 9 EMA / VWAP warmup
-        if len(candles_raw) < 20:
+        # 2. If session just opened (fewer than 60 1m candles = 20 3m candles), fetch prior session candles
+        if len(candles_raw) < 60:
             today = datetime.now(IST).date()
-            from_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
+            from_date = (today - timedelta(days=7)).strftime("%Y-%m-%d")
             to_date = today.strftime("%Y-%m-%d")
-            url_history = f"https://api.upstox.com/v2/historical-candle/{instrument_encoded}/3minute/{to_date}/{from_date}"
+            url_history = f"https://api.upstox.com/v2/historical-candle/{instrument_encoded}/1minute/{to_date}/{from_date}"
             
             try:
                 async with aiohttp.ClientSession() as session:
@@ -90,11 +95,12 @@ class MarketDataEngine:
                         if resp.status == 200:
                             payload = await resp.json()
                             history_candles = payload.get("data", {}).get("candles", [])
-                            logger.info(f"Fetched {len(history_candles)} prior historical 3m candles from Upstox.")
+                            logger.info(f"Fetched {len(history_candles)} prior historical 1-minute candles from Upstox.")
                             # Combine: history first, then today's intraday
                             candles_raw = history_candles + candles_raw
                         else:
-                            logger.warning(f"Upstox historical candle query returned HTTP {resp.status}")
+                            text = await resp.text()
+                            logger.warning(f"Upstox historical candle query returned HTTP {resp.status}: {text}")
             except Exception as e:
                 logger.error(f"Error fetching extended historical candles from Upstox: {e}")
 
@@ -107,14 +113,74 @@ class MarketDataEngine:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.drop_duplicates(subset=["timestamp"]).sort_values(by="timestamp").reset_index(drop=True)
         
-        self.candles_3m = df[["timestamp", "open", "high", "low", "close", "volume"]]
+        # Resample 1m candles into clean 3m candles
+        df_indexed = df.set_index("timestamp")
+        resampled = df_indexed.resample("3min", label="left", closed="left").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna().reset_index()
+
+        self.candles_3m = resampled[["timestamp", "open", "high", "low", "close", "volume"]]
         if len(self.candles_3m) > 0:
             self.spot_ltp = float(self.candles_3m.iloc[-1]["close"])
-            open_price = float(self.candles_3m.iloc[0]["open"])
-            self.spot_change = round(self.spot_ltp - open_price, 2)
-            self.spot_change_pct = round((self.spot_change / open_price) * 100, 2) if open_price else 0.0
+            self.spot_open_price = float(self.candles_3m.iloc[0]["open"])
+            self.spot_change = round(self.spot_ltp - self.spot_open_price, 2)
+            self.spot_change_pct = round((self.spot_change / self.spot_open_price) * 100, 2) if self.spot_open_price else 0.0
 
-        logger.info(f"Loaded {len(self.candles_3m)} REAL market candles from Upstox. Latest Spot LTP: {self.spot_ltp}")
+        logger.info(f"Synthesized {len(self.candles_3m)} REAL 3-minute candles from Upstox 1m feed. Latest Spot LTP: {self.spot_ltp}")
+
+    async def get_active_expiry_date(self) -> str:
+        """
+        Resolves the active nearest weekly expiry date for the index.
+        First attempts to fetch real contract expiries directly from Upstox.
+        Falls back to calculating the upcoming Thursday expiry.
+        """
+        if self.current_expiry_date:
+            return self.current_expiry_date
+
+        instrument_encoded = self.spot_instrument.replace("|", "%7C")
+        url = f"https://api.upstox.com/v2/option/contract?instrument_key={instrument_encoded}"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.access_token}"
+        }
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        contracts = data.get("data", [])
+                        expiries = set()
+                        for c in contracts:
+                            exp = c.get("expiry") or c.get("expiry_date")
+                            if exp:
+                                expiries.add(str(exp).split("T")[0])
+                        
+                        future_expiries = sorted([e for e in expiries if e >= today_str])
+                        if future_expiries:
+                            self.current_expiry_date = future_expiries[0]
+                            logger.info(f"Resolved nearest active option expiry: {self.current_expiry_date}")
+                            return self.current_expiry_date
+                    else:
+                        logger.warning(f"Option contracts query returned HTTP {resp.status}")
+        except Exception as e:
+            logger.warning(f"Could not fetch contracts from Upstox API: {e}")
+
+        # Fallback: compute upcoming Thursday
+        now = datetime.now(IST)
+        today = now.date()
+        days_ahead = (3 - today.weekday()) % 7  # 3 is Thursday
+        if days_ahead == 0 and (now.hour > 15 or (now.hour == 15 and now.minute >= 30)):
+            days_ahead = 7
+        fallback_expiry = (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        self.current_expiry_date = fallback_expiry
+        logger.info(f"Using computed fallback option expiry: {self.current_expiry_date}")
+        return self.current_expiry_date
 
     async def fetch_option_chain_and_select_strikes(self):
         """
@@ -122,7 +188,8 @@ class MarketDataEngine:
         and computes Open Interest changes directly from live exchange data.
         """
         instrument_encoded = self.spot_instrument.replace("|", "%7C")
-        url = f"https://api.upstox.com/v2/option/chain?instrument_key={instrument_encoded}"
+        expiry_date = await self.get_active_expiry_date()
+        url = f"https://api.upstox.com/v2/option/chain?instrument_key={instrument_encoded}&expiry_date={expiry_date}"
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.access_token}"
@@ -137,10 +204,11 @@ class MarketDataEngine:
                         if records:
                             self.option_chain_data = records
                             self._process_option_chain_records(records)
-                            logger.info(
-                                f"REAL Option Chain refreshed. ATM CE: {self.atm_ce_contract.get('tradingsymbol')} (LTP: ₹{self.atm_ce_contract.get('ltp')}) | "
-                                f"ATM PE: {self.atm_pe_contract.get('tradingsymbol')} (LTP: ₹{self.atm_pe_contract.get('ltp')})"
-                            )
+                            if self.atm_ce_contract and self.atm_pe_contract:
+                                logger.info(
+                                    f"REAL Option Chain refreshed. ATM CE: {self.atm_ce_contract.get('tradingsymbol')} (LTP: ₹{self.atm_ce_contract.get('ltp')}) | "
+                                    f"ATM PE: {self.atm_pe_contract.get('tradingsymbol')} (LTP: ₹{self.atm_pe_contract.get('ltp')})"
+                                )
                             return
                     else:
                         text = await resp.text()
@@ -153,67 +221,70 @@ class MarketDataEngine:
         if not records or self.spot_ltp <= 0:
             return
 
-        strike_step = 50 if "NIFTY" in self.config.index_name else 100
-        atm_strike = round(self.spot_ltp / strike_step) * strike_step
+        # Find the record closest to spot_ltp
+        best_record = min(records, key=lambda x: abs(float(x.get("strike_price", 0)) - self.spot_ltp))
+        atm_strike = float(best_record.get("strike_price", 0))
 
-        for item in records:
-            strike = item.get("strike_price")
-            if strike == atm_strike:
-                call_data = item.get("call_options", {})
-                put_data = item.get("put_options", {})
-                
-                call_mkt = call_data.get("market_data", {})
-                put_mkt = put_data.get("market_data", {})
+        call_data = best_record.get("call_options", {})
+        put_data = best_record.get("put_options", {})
+        
+        call_mkt = call_data.get("market_data", {})
+        put_mkt = put_data.get("market_data", {})
 
-                call_oi = int(call_mkt.get("oi", 0))
-                call_prev_oi = int(call_mkt.get("prev_oi", call_oi))
-                call_oi_change = call_oi - call_prev_oi
-                call_oi_change_pct = (call_oi_change / call_prev_oi * 100) if call_prev_oi > 0 else 0.0
+        call_oi = int(call_mkt.get("oi", 0))
+        call_prev_oi = int(call_mkt.get("prev_oi", call_oi))
+        call_oi_change = call_oi - call_prev_oi
+        call_oi_change_pct = (call_oi_change / call_prev_oi * 100) if call_prev_oi > 0 else 0.0
 
-                put_oi = int(put_mkt.get("oi", 0))
-                put_prev_oi = int(put_mkt.get("prev_oi", put_oi))
-                put_oi_change = put_oi - put_prev_oi
-                put_oi_change_pct = (put_oi_change / put_prev_oi * 100) if put_prev_oi > 0 else 0.0
+        put_oi = int(put_mkt.get("oi", 0))
+        put_prev_oi = int(put_mkt.get("prev_oi", put_oi))
+        put_oi_change = put_oi - put_prev_oi
+        put_oi_change_pct = (put_oi_change / put_prev_oi * 100) if put_prev_oi > 0 else 0.0
 
-                ce_key = call_data.get("instrument_key")
-                pe_key = put_data.get("instrument_key")
+        ce_key = call_data.get("instrument_key")
+        pe_key = put_data.get("instrument_key")
 
-                self.atm_ce_contract = {
-                    "instrument_key": ce_key,
-                    "tradingsymbol": call_data.get("tradingsymbol", f"{self.config.index_name} {int(atm_strike)} CE"),
-                    "strike": atm_strike,
-                    "ltp": float(call_mkt.get("ltp", 0.0)),
-                    "vwap": float(call_mkt.get("vwap", 0.0)),
-                    "oi": call_oi,
-                    "oi_change": call_oi_change,
-                    "oi_change_pct": round(call_oi_change_pct, 2)
-                }
+        self.atm_ce_contract = {
+            "instrument_key": ce_key,
+            "tradingsymbol": call_data.get("tradingsymbol", f"{self.config.index_name} {int(atm_strike)} CE"),
+            "strike": atm_strike,
+            "ltp": float(call_mkt.get("ltp", 0.0)),
+            "vwap": float(call_mkt.get("vwap", 0.0)),
+            "oi": call_oi,
+            "oi_change": call_oi_change,
+            "oi_change_pct": round(call_oi_change_pct, 2)
+        }
 
-                self.atm_pe_contract = {
-                    "instrument_key": pe_key,
-                    "tradingsymbol": put_data.get("tradingsymbol", f"{self.config.index_name} {int(atm_strike)} PE"),
-                    "strike": atm_strike,
-                    "ltp": float(put_mkt.get("ltp", 0.0)),
-                    "vwap": float(put_mkt.get("vwap", 0.0)),
-                    "oi": put_oi,
-                    "oi_change": put_oi_change,
-                    "oi_change_pct": round(put_oi_change_pct, 2)
-                }
-                
-                if ce_key:
-                    self.option_ltp[ce_key] = self.atm_ce_contract["ltp"]
-                    if ce_key not in self.subscribed_keys:
-                        self.subscribed_keys.append(ce_key)
-                        if self.streamer and self.streamer.is_connected():
-                            self.streamer.subscribe([ce_key], MarketDataStreamerV3.ModeFull)
+        self.atm_pe_contract = {
+            "instrument_key": pe_key,
+            "tradingsymbol": put_data.get("tradingsymbol", f"{self.config.index_name} {int(atm_strike)} PE"),
+            "strike": atm_strike,
+            "ltp": float(put_mkt.get("ltp", 0.0)),
+            "vwap": float(put_mkt.get("vwap", 0.0)),
+            "oi": put_oi,
+            "oi_change": put_oi_change,
+            "oi_change_pct": round(put_oi_change_pct, 2)
+        }
+        
+        if ce_key:
+            self.option_ltp[ce_key] = self.atm_ce_contract["ltp"]
+            if ce_key not in self.subscribed_keys:
+                self.subscribed_keys.append(ce_key)
+                if self.streamer:
+                    try:
+                        self.streamer.subscribe([ce_key], "full")
+                    except Exception as e:
+                        logger.warning(f"Error subscribing to {ce_key}: {e}")
 
-                if pe_key:
-                    self.option_ltp[pe_key] = self.atm_pe_contract["ltp"]
-                    if pe_key not in self.subscribed_keys:
-                        self.subscribed_keys.append(pe_key)
-                        if self.streamer and self.streamer.is_connected():
-                            self.streamer.subscribe([pe_key], MarketDataStreamerV3.ModeFull)
-                break
+        if pe_key:
+            self.option_ltp[pe_key] = self.atm_pe_contract["ltp"]
+            if pe_key not in self.subscribed_keys:
+                self.subscribed_keys.append(pe_key)
+                if self.streamer:
+                    try:
+                        self.streamer.subscribe([pe_key], "full")
+                    except Exception as e:
+                        logger.warning(f"Error subscribing to {pe_key}: {e}")
 
     def register_on_candle_close(self, callback: Callable[[pd.DataFrame], None]):
         """Registers a listener for completed 3-minute candles."""
@@ -224,10 +295,12 @@ class MarketDataEngine:
         now = datetime.now(IST)
         
         if instrument_key == self.spot_instrument:
-            if self.spot_ltp > 0:
-                self.spot_change = round(ltp - self.spot_ltp, 2)
-                self.spot_change_pct = round((self.spot_change / self.spot_ltp) * 100, 2)
             self.spot_ltp = ltp
+            if self.spot_open_price > 0:
+                self.spot_change = round(ltp - self.spot_open_price, 2)
+                self.spot_change_pct = round((self.spot_change / self.spot_open_price) * 100, 2)
+            else:
+                self.spot_open_price = ltp
 
             # Aggregate into 3-minute candle bucket
             candle_bucket = now.replace(second=0, microsecond=0)
@@ -279,13 +352,12 @@ class MarketDataEngine:
         try:
             feeds = message.get("feeds", {}) if isinstance(message, dict) else {}
             for instrument_key, feed_data in feeds.items():
-                # Extract full market data LTP and volume
-                ltpc = feed_data.get("fullFeed", {}).get("marketFF", {}).get("ltpc", {})
-                if not ltpc:
-                    ltpc = feed_data.get("ltpc", {})
+                ff = feed_data.get("fullFeed", {})
+                market_ff = ff.get("marketFF", {}) if isinstance(ff, dict) else {}
+                ltpc = market_ff.get("ltpc", {}) or feed_data.get("ltpc", {})
 
                 ltp = float(ltpc.get("ltp", 0.0))
-                volume = int(feed_data.get("fullFeed", {}).get("marketFF", {}).get("volume", 0))
+                volume = int(market_ff.get("volume", 0))
 
                 if ltp > 0:
                     self.on_tick(instrument_key, ltp, volume)
@@ -298,16 +370,18 @@ class MarketDataEngine:
         logger.info(f"Connecting to Upstox MarketDataStreamerV3 WebSocket for {self.subscribed_keys}...")
         
         try:
-            # Configure Upstox API Client
             configuration = upstox_client.Configuration()
             configuration.access_token = self.access_token
             api_client = upstox_client.ApiClient(configuration)
 
-            self.streamer = MarketDataStreamerV3(api_client)
+            self.streamer = MarketDataStreamerV3(api_client, self.subscribed_keys, "full")
             
             def on_open():
                 logger.info(f"Connected to live Upstox WebSocket! Subscribing to: {self.subscribed_keys}")
-                self.streamer.subscribe(self.subscribed_keys, MarketDataStreamerV3.ModeFull)
+                try:
+                    self.streamer.subscribe(self.subscribed_keys, "full")
+                except Exception as e:
+                    logger.warning(f"Streamer subscribe on open notice: {e}")
 
             def on_message(message):
                 self._handle_streamer_feed(message)
