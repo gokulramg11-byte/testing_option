@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="100" fill="#0B0F19"/>
+  <rect x="24" y="24" width="464" height="464" rx="80" fill="#111827" stroke="#1F2937" stroke-width="8"/>
+  <circle cx="256" cy="256" r="140" fill="#161F30" stroke="#10B981" stroke-width="12" stroke-dasharray="8 8"/>
+  <!-- Bolt / Candlestick Emblem -->
+  <path d="M280 120 L190 270 L260 270 L232 392 L322 242 L252 242 Z" fill="#10B981" filter="drop-shadow(0 0 16px rgba(16, 185, 129, 0.8))"/>
+  <!-- Status Dot -->
+  <circle cx="256" cy="430" r="16" fill="#10B981"/>
+</svg>

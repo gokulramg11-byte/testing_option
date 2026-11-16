@@ -1,0 +1,45 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // =========================================================================
+    // INSTITUTIONAL SINGLE-OPERATOR SECURITY RULES
+    // =========================================================================
+    // Replace "operator@alphascalp.quant" below with your actual Google Account email.
+    // In production, all reads and writes are strictly restricted to your verified Google Identity.
+    // The Python Bot running on GitHub Actions authenticates via Firebase Admin SDK
+    // (Service Account), which automatically bypasses these rules with root admin privileges.
+    // =========================================================================
+    
+    function isAuthorizedOperator() {
+      return request.auth != null && 
+        (
+          request.auth.token.email == "operator@alphascalp.quant" ||
+          request.auth.token.email.matches(".*@gmail\\.com") // Change to your exact email in Firebase Console
+        );
+    }
+
+    // 1. Live Bot Telemetry: Read by dashboard, written by Admin SDK
+    match /live_state/{document=**} {
+      allow read: if isAuthorizedOperator();
+      allow write: if isAuthorizedOperator();
+    }
+
+    // 2. Control Commands (Kill Switch, Arm/Disarm Bot):
+    match /control/{document=**} {
+      allow read, write: if isAuthorizedOperator();
+    }
+
+    // 3. Trade Audit Log:
+    match /trade_history/{document=**} {
+      allow read: if isAuthorizedOperator();
+      allow write: if isAuthorizedOperator();
+    }
+
+    // Deny all other unmatched paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
