@@ -38,41 +38,28 @@ data class TradeRecord(
 )
 
 data class TelemetryState(
-    val heartbeat: String = "ONLINE",
+    val heartbeat: String = "STANDBY",
     val mode: String = "PAPER",
     val isArmed: Boolean = true,
-    val latencyMs: Int = 12,
+    val latencyMs: Int = 0,
     val indexName: String = "NIFTY 50",
-    val spotLtp: Double = 24350.25,
-    val spotChange: Double = 125.40,
-    val spotChangePct: Double = 0.52,
-    val netDailyMtm: Double = 3450.00,
-    val winRate: Double = 75.0,
-    val totalTrades: String = "3/4",
+    val spotLtp: Double = 0.0,
+    val spotChange: Double = 0.0,
+    val spotChangePct: Double = 0.0,
+    val netDailyMtm: Double = 0.0,
+    val winRate: Double = 0.0,
+    val totalTrades: String = "0",
     val consecutiveSl: Int = 0,
     val maxConsecutiveSl: Int = 3,
-    val signalStatus: String = "BUY_CE",
+    val signalStatus: String = "STANDBY",
     val gates: List<GateCheck> = listOf(
-        GateCheck(1, "1. Active Time Window", true, "PASS", "10:15 IST (Active Session 09:30-12:00)"),
-        GateCheck(2, "2. Spot > VWAP & 9 EMA", true, "PASS", "Spot 24350 > VWAP 24310 & EMA 24325"),
-        GateCheck(3, "3. 9 EMA Pullback Touch", true, "PASS", "Prev Candle Low 24322 <= EMA 24325"),
-        GateCheck(4, "4. Trigger Candle Close", true, "PASS", "Closed Green +14.5 pts above 9 EMA"),
-        GateCheck(5, "5. Stoch RSI Cross", true, "PASS", "%K 28.4 crossed %D 22.1 (Oversold < 30)"),
-        GateCheck(6, "6. 1.5x Volume Spike", true, "PASS", "182.4K vol > 1.5x SMA 112K"),
-        GateCheck(7, "7. Option VWAP & OI Filter", true, "PASS", "Call > VWAP (154.2 > 148.0) & Call OI -12.4% Short Covering")
+        GateCheck(1, "1. Active Time Window", false, "WAIT", "Awaiting live session (09:30-12:00 / 13:30-15:10 IST)"),
+        GateCheck(2, "2. Spot vs VWAP & 9 EMA", false, "WAIT", "Awaiting live candle calculation"),
+        GateCheck(3, "3. 9 EMA Pullback Touch", false, "WAIT", "Awaiting closed 3m candle evaluation"),
+        GateCheck(4, "4. Trigger Candle Close", false, "WAIT", "Awaiting trigger candle"),
+        GateCheck(5, "5. Stoch RSI Cross", false, "WAIT", "Awaiting momentum confirmation"),
+        GateCheck(6, "6. 1.5x Volume Surge", false, "WAIT", "Awaiting volume validation"),
+        GateCheck(7, "7. Option VWAP & OI Filter", false, "WAIT", "Awaiting live Option Chain feed")
     ),
-    val activePosition: ActivePosition? = ActivePosition(
-        strike = "NIFTY 24350 CE 21-NOV",
-        optionType = "CE",
-        entryPrice = 142.50,
-        currentLtp = 168.20,
-        slPrice = 152.00,
-        pnl = 1927.50,
-        pointsCaptured = 25.70,
-        lots = 1,
-        qty = 75,
-        timeSlStatus = "4m 12s remaining (Candle 2/3)",
-        isBreakeven = true,
-        isPartial = false
-    )
+    val activePosition: ActivePosition? = null
 )

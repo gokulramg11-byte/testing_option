@@ -14,19 +14,23 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.alphascalp.quant.data.FirestoreSyncRepository
 import com.alphascalp.quant.data.TelemetryState
+import com.alphascalp.quant.data.TradeRecord
 import com.alphascalp.quant.ui.CockpitScreen
 import com.alphascalp.quant.ui.LoginScreen
 import com.alphascalp.quant.ui.RiskRulesDialog
 import com.alphascalp.quant.ui.TradeLogScreen
-import com.alphascalp.quant.ui.defaultTrades
 import com.alphascalp.quant.ui.theme.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,16 +45,49 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MainAppScaffold() {
+    val context = LocalContext.current
+    val repository = remember { FirestoreSyncRepository(context) }
+    val coroutineScope = rememberCoroutineScope()
+
     var isAuthenticated by remember { mutableStateOf(false) }
     var operatorEmail by remember { mutableStateOf("") }
+    var projectId by remember { mutableStateOf(repository.getSavedProjectId()) }
     var currentTab by remember { mutableStateOf(0) }
     var showRulesDialog by remember { mutableStateOf(false) }
+
+    // Live state from Firestore (zero dummy data)
     var telemetry by remember { mutableStateOf(TelemetryState()) }
+    var tradeList by remember { mutableStateOf<List<TradeRecord>>(emptyList()) }
+
+    // Real-time synchronization loop with Cloud Workflow
+    LaunchedEffect(isAuthenticated, projectId) {
+        if (isAuthenticated && projectId.isNotBlank()) {
+            while (isActive) {
+                try {
+                    // 1. Fetch live telemetry document
+                    val liveState = repository.fetchLiveState(projectId)
+                    if (liveState != null) {
+                        telemetry = liveState
+                    }
+
+                    // 2. Fetch trade execution records
+                    val trades = repository.fetchTradeHistory(projectId)
+                    tradeList = trades
+                } catch (e: Exception) {
+                    // Network or connection pause; maintain current state
+                }
+                delay(2500) // Poll every 2.5s to preserve quota
+            }
+        }
+    }
 
     if (!isAuthenticated) {
         LoginScreen(
-            onLoginSuccess = { email ->
+            initialProjectId = projectId,
+            onLoginSuccess = { email, enteredProjectId ->
                 operatorEmail = email
+                projectId = enteredProjectId
+                repository.saveProjectId(enteredProjectId)
                 isAuthenticated = true
             }
         )
@@ -82,10 +119,19 @@ fun MainAppScaffold() {
                         telemetry = telemetry,
                         onOpenRules = { showRulesDialog = true },
                         onEmergencyKill = {
-                            telemetry = telemetry.copy(
-                                isArmed = false,
-                                activePosition = null
-                            )
+                            coroutineScope.launch {
+                                repository.sendEmergencyKillSwitch(projectId)
+                                telemetry = telemetry.copy(
+                                    isArmed = false,
+                                    activePosition = null
+                                )
+                            }
+                        },
+                        onToggleArm = { newArmedState ->
+                            coroutineScope.launch {
+                                repository.toggleArming(projectId, newArmedState)
+                                telemetry = telemetry.copy(isArmed = newArmedState)
+                            }
                         }
                     )
                     1 -> SentinelRulesScreen(
@@ -93,7 +139,7 @@ fun MainAppScaffold() {
                         onOpenModal = { showRulesDialog = true }
                     )
                     2 -> TradeLogScreen(
-                        trades = defaultTrades
+                        trades = tradeList
                     )
                 }
 
@@ -162,8 +208,8 @@ private fun AppTopBar(
                         .padding(horizontal = 8.dp, vertical = 3.dp)
                 ) {
                     Text(
-                        text = "● $heartbeat ${latencyMs}ms",
-                        color = EmeraldBright,
+                        text = if (heartbeat == "ONLINE") "● ONLINE ${latencyMs}ms" else "● $heartbeat",
+                        color = if (heartbeat == "ONLINE") EmeraldBright else Amber,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
@@ -300,12 +346,13 @@ fun SentinelRulesScreen(
                     }
                     Box(
                         modifier = Modifier
-                            .background(if (gate.isPass) EmeraldDark else CrimsonDark, MaterialTheme.shapes.small)
+                            .background(if (gate.isPass) EmeraldDark else Surface, MaterialTheme.shapes.small)
+                            .border(1.dp, if (gate.isPass) Emerald else BorderSubtle, MaterialTheme.shapes.small)
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = if (gate.isPass) "PASS" else "FAIL",
-                            color = if (gate.isPass) EmeraldBright else CrimsonBright,
+                            text = if (gate.isPass) "PASS" else gate.label,
+                            color = if (gate.isPass) EmeraldBright else TextDim,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace

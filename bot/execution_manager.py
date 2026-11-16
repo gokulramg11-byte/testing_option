@@ -51,7 +51,7 @@ class ExecutionManager:
 
         order_id = f"VIRTUAL_{int(timestamp.timestamp())}"
         
-        if not self.config.dry_run and self.access_token != "PAPER_TRADING_DUMMY_TOKEN":
+        if not self.config.dry_run:
             # Live Upstox Order Execution
             order_id = self._place_upstox_order(
                 instrument_key=contract["instrument_key"],
@@ -162,7 +162,7 @@ class ExecutionManager:
         points = round(exit_price - pos["entry_price"], 2)
         trade_pnl = round(points * pos["current_qty"], 2)
         
-        if not self.config.dry_run and self.access_token != "PAPER_TRADING_DUMMY_TOKEN":
+        if not self.config.dry_run:
             self._place_upstox_order(
                 instrument_key=pos["instrument_key"],
                 quantity=pos["current_qty"],

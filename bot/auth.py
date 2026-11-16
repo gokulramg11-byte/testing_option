@@ -123,24 +123,22 @@ class UpstoxAuthManager:
             return None
 
     def get_valid_token(self) -> str:
-        """Returns a verified access token or raises RuntimeError."""
+        """Returns a verified access token or raises RuntimeError. No dummy tokens allowed."""
         # 1. Test existing token if supplied (Option B: Manual Daily Token)
         if self.access_token:
             if self.validate_existing_token(self.access_token):
                 logger.info("Authenticated successfully using UPSTOX_ACCESS_TOKEN (Option B: Manual Token Mode).")
                 return self.access_token
-            logger.warning("Provided UPSTOX_ACCESS_TOKEN is invalid or expired.")
+            logger.error("Provided UPSTOX_ACCESS_TOKEN is invalid or expired with Upstox API.")
 
-        # 2. Attempt automated generation
+        # 2. Attempt automated generation via TOTP
         new_token = self.generate_token_via_totp()
         if new_token:
             self.access_token = new_token
             return new_token
 
-        # 3. If in DRY_RUN mode, allow a mock/paper token if credentials aren't yet active
-        if self.config.dry_run and not self.access_token:
-            logger.warning("[SAFETY-NOTICE] Running in PAPER TRADING (DRY_RUN) mode without live Upstox session. Virtual feed will initialize.")
-            self.access_token = "PAPER_TRADING_DUMMY_TOKEN"
-            return self.access_token
-
-        raise RuntimeError("No valid Upstox Access Token could be resolved. Please set UPSTOX_ACCESS_TOKEN or configure UPSTOX_API_KEY, UPSTOX_API_SECRET, UPSTOX_MOBILE, UPSTOX_PIN, UPSTOX_TOTP_SECRET.")
+        raise RuntimeError(
+            "CRITICAL: No valid Upstox Access Token found. Real live market data is required for strategy testing. "
+            "Please provide a valid UPSTOX_ACCESS_TOKEN in workflow inputs or configure UPSTOX_API_KEY, "
+            "UPSTOX_API_SECRET, UPSTOX_MOBILE, UPSTOX_PIN, UPSTOX_TOTP_SECRET."
+        )

@@ -10,7 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.alphascalp.quant.data.TradeRecord
@@ -26,8 +27,8 @@ import com.alphascalp.quant.ui.theme.*
 
 @Composable
 fun TradeLogScreen(
-    modifier: Modifier = Modifier,
-    trades: List<TradeRecord> = defaultTrades
+    trades: List<TradeRecord>,
+    modifier: Modifier = Modifier
 ) {
     var selectedFilter by remember { mutableStateOf("ALL") }
 
@@ -52,39 +53,20 @@ fun TradeLogScreen(
     ) {
         item {
             // Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "AUDIT LOG & ANALYTICS",
-                        color = TextPrimary,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    Text(
-                        text = "Intraday Execution History (Immutable)",
-                        color = TextMuted,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
-                IconButton(
-                    onClick = { /* Export CSV */ },
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Surface)
-                        .border(1.dp, BorderSubtle, RoundedCornerShape(8.dp))
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FileDownload,
-                        contentDescription = "Export CSV",
-                        tint = Cyan
-                    )
-                }
+            Column {
+                Text(
+                    text = "AUDIT LOG & ANALYTICS",
+                    color = TextPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = "Live Workflow Execution History (Direct from Firestore)",
+                    color = TextMuted,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
             }
         }
 
@@ -105,38 +87,39 @@ fun TradeLogScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Metric 1: Net P&L
+                        // Metric 1: Realized P&L
                         PerformanceMetric(
                             label = "REALIZED MTM",
                             value = "${if (totalPnl >= 0) "+" else ""}₹${"%,.2f".format(totalPnl)}",
-                            valueColor = if (totalPnl >= 0) EmeraldBright else CrimsonBright,
+                            valueColor = if (totalPnl > 0) EmeraldBright else if (totalPnl < 0) CrimsonBright else TextPrimary,
                             modifier = Modifier.weight(1f)
                         )
                         // Metric 2: Win Rate
                         PerformanceMetric(
                             label = "WIN RATE",
                             value = "${"%.1f".format(winRate)}% ($winCount/${trades.size})",
-                            valueColor = if (winRate >= 60) Emerald else Amber,
+                            valueColor = if (winRate >= 60) Emerald else if (trades.isEmpty()) TextDim else Amber,
                             modifier = Modifier.weight(1f)
                         )
                     }
-                    Divider(color = BorderSubtle, thickness = 1.dp)
+                    HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Metric 3: Profit Factor
+                        // Metric 3: Total Trades
                         PerformanceMetric(
-                            label = "PROFIT FACTOR",
-                            value = "2.84",
-                            valueColor = EmeraldBright,
+                            label = "TOTAL TRADES",
+                            value = "${trades.size} Executions",
+                            valueColor = TextPrimary,
                             modifier = Modifier.weight(1f)
                         )
-                        // Metric 4: Avg Duration
+                        // Metric 4: Avg Profit/Loss
+                        val avgPnl = if (trades.isNotEmpty()) totalPnl / trades.size else 0.0
                         PerformanceMetric(
-                            label = "AVG DURATION",
-                            value = "5m 24s",
-                            valueColor = TextPrimary,
+                            label = "AVG TRADE PNL",
+                            value = "${if (avgPnl >= 0) "+" else ""}₹${"%,.2f".format(avgPnl)}",
+                            valueColor = if (avgPnl > 0) EmeraldBright else if (avgPnl < 0) CrimsonBright else TextDim,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -144,34 +127,73 @@ fun TradeLogScreen(
             }
         }
 
-        item {
-            // Filter Chips
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChipItem(
-                    label = "ALL (${trades.size})",
-                    isSelected = selectedFilter == "ALL",
-                    onClick = { selectedFilter = "ALL" }
-                )
-                FilterChipItem(
-                    label = "CE LONGS (${trades.count { it.optionType == "CE" }})",
-                    isSelected = selectedFilter == "CE",
-                    accentColor = Emerald,
-                    onClick = { selectedFilter = "CE" }
-                )
-                FilterChipItem(
-                    label = "PE SHORTS (${trades.count { it.optionType == "PE" }})",
-                    isSelected = selectedFilter == "PE",
-                    accentColor = Crimson,
-                    onClick = { selectedFilter = "PE" }
-                )
+        if (trades.isEmpty()) {
+            item {
+                // Professional Empty State (No Dummy Data)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.History,
+                            contentDescription = null,
+                            tint = TextDim,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Text(
+                            text = "NO LIVE TRADES RECORDED",
+                            color = TextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            text = "Trades executed by your GitHub Actions bot session will appear here in real-time. Zero simulated records.",
+                            color = TextMuted,
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(horizontal = 24.dp)
+                        )
+                    }
+                }
             }
-        }
+        } else {
+            item {
+                // Filter Chips
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChipItem(
+                        label = "ALL (${trades.size})",
+                        isSelected = selectedFilter == "ALL",
+                        onClick = { selectedFilter = "ALL" }
+                    )
+                    FilterChipItem(
+                        label = "CE LONGS (${trades.count { it.optionType == "CE" }})",
+                        isSelected = selectedFilter == "CE",
+                        accentColor = Emerald,
+                        onClick = { selectedFilter = "CE" }
+                    )
+                    FilterChipItem(
+                        label = "PE SHORTS (${trades.count { it.optionType == "PE" }})",
+                        isSelected = selectedFilter == "PE",
+                        accentColor = Crimson,
+                        onClick = { selectedFilter = "PE" }
+                    )
+                }
+            }
 
-        items(filteredTrades) { trade ->
-            TradeCard(trade = trade)
+            items(filteredTrades) { trade ->
+                TradeCard(trade = trade)
+            }
         }
     }
 }
@@ -196,7 +218,7 @@ private fun PerformanceMetric(
         Text(
             text = value,
             color = valueColor,
-            fontSize = 17.sp,
+            fontSize = 16.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace
         )
@@ -246,7 +268,6 @@ fun TradeCard(trade: TradeRecord) {
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Header: Strike, Option badge, PnL
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -372,58 +393,3 @@ private fun MetricColumn(
         )
     }
 }
-
-val defaultTrades = listOf(
-    TradeRecord(
-        id = "TR-101",
-        strike = "NIFTY 24350 CE",
-        optionType = "CE",
-        qty = 75,
-        entryPrice = 142.50,
-        exitPrice = 168.20,
-        entryTime = "10:18:22",
-        exitTime = "10:24:10",
-        points = 25.70,
-        pnl = 1927.50,
-        exitReason = "TARGET 2 (+15 pts trail)"
-    ),
-    TradeRecord(
-        id = "TR-102",
-        strike = "NIFTY 24300 CE",
-        optionType = "CE",
-        qty = 75,
-        entryPrice = 120.00,
-        exitPrice = 135.50,
-        entryTime = "10:45:14",
-        exitTime = "10:52:01",
-        points = 15.50,
-        pnl = 1162.50,
-        exitReason = "PARTIAL 50% & TRAIL"
-    ),
-    TradeRecord(
-        id = "TR-103",
-        strike = "NIFTY 24400 PE",
-        optionType = "PE",
-        qty = 75,
-        entryPrice = 98.40,
-        exitPrice = 88.50,
-        entryTime = "11:12:05",
-        exitTime = "11:15:30",
-        points = -9.90,
-        pnl = -742.50,
-        exitReason = "HARD STOP LOSS (10%)"
-    ),
-    TradeRecord(
-        id = "TR-104",
-        strike = "NIFTY 24350 CE",
-        optionType = "CE",
-        qty = 75,
-        entryPrice = 155.00,
-        exitPrice = 170.00,
-        entryTime = "13:40:19",
-        exitTime = "13:48:42",
-        points = 15.00,
-        pnl = 1102.50,
-        exitReason = "TARGET 2 REACHED"
-    )
-)

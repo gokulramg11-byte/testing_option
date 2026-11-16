@@ -1,10 +1,11 @@
 """
 Market Data Engine:
-- Fetches intraday 3-minute historical candles for instant indicator warmup.
+- Connects directly to Upstox API v2/v3 for 100% REAL LIVE market data.
+- Fetches real 3-minute historical candles from Upstox Historical/Intraday REST APIs for indicator warmup.
 - Connects to Upstox Market Data Feed V3 (MarketDataStreamerV3 / WebSocket) in 'full' mode.
-- Aggregates ticks into 1-minute and 3-minute OHLCV candles.
-- Polls Option Chain to track real-time Change in Open Interest (OI) & Option VWAP.
-- Includes a realistic Paper Market Feed generator when running off-hours or in test mode.
+- Aggregates real live ticks into 3-minute OHLCV candles.
+- Polls live Upstox Option Chain to track real-time Open Interest (OI), Change in OI, and Option VWAP.
+- Zero mock or dummy data. Real market feeds only.
 """
 
 import asyncio
@@ -28,11 +29,10 @@ class MarketDataEngine:
         self.spot_instrument = config.spot_instrument_key
         
         # Real-time data caches
-        self.spot_ltp: float = 24350.0
+        self.spot_ltp: float = 0.0
         self.spot_change: float = 0.0
         self.spot_change_pct: float = 0.0
         self.candles_3m: pd.DataFrame = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
-        self.option_candles_3m: Dict[str, pd.DataFrame] = {} # instrument_key -> DataFrame
         
         # Current subscribed instruments
         self.subscribed_keys: List[str] = [self.spot_instrument]
@@ -49,87 +49,78 @@ class MarketDataEngine:
         self.current_forming_candle: Optional[Dict[str, Any]] = None
         self.is_running: bool = False
         self._last_oi_poll: datetime = datetime.min.replace(tzinfo=IST)
+        self._oi_poll_task: Optional[asyncio.Task] = None
 
     async def warm_up_historical_data(self):
-        """Fetches intraday 3-minute candles from Upstox REST API to prime indicators."""
-        logger.info(f"Warming up historical 3-minute candles for {self.spot_instrument}...")
-        if self.access_token == "PAPER_TRADING_DUMMY_TOKEN":
-            self._generate_mock_historical_candles()
-            return
-
-        # Upstox V2 intraday candle endpoint
+        """Fetches real historical 3-minute candles from Upstox REST API to prime indicators."""
+        logger.info(f"Connecting to Upstox API to fetch real historical 3m candles for {self.spot_instrument}...")
         instrument_encoded = self.spot_instrument.replace("|", "%7C")
-        url = f"https://api.upstox.com/v2/historical-candle/intraday/{instrument_encoded}/3minute"
+        
+        # 1. First attempt: Today's intraday 3-minute candles
+        url_intraday = f"https://api.upstox.com/v2/historical-candle/intraday/{instrument_encoded}/3minute"
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.access_token}"
         }
 
+        candles_raw = []
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=10) as resp:
+                async with session.get(url_intraday, headers=headers, timeout=12) as resp:
                     if resp.status == 200:
                         payload = await resp.json()
                         candles_raw = payload.get("data", {}).get("candles", [])
-                        if candles_raw:
-                            # Format: [timestamp, open, high, low, close, volume, oi]
-                            df = pd.DataFrame(candles_raw, columns=["timestamp", "open", "high", "low", "close", "volume", "oi"])
-                            df["timestamp"] = pd.to_datetime(df["timestamp"])
-                            # Sort ascending
-                            df = df.sort_values(by="timestamp").reset_index(drop=True)
-                            self.candles_3m = df[["timestamp", "open", "high", "low", "close", "volume"]]
-                            if len(df) > 0:
-                                self.spot_ltp = float(df.iloc[-1]["close"])
-                            logger.info(f"Successfully loaded {len(self.candles_3m)} historical 3m candles. Spot LTP: {self.spot_ltp}")
-                            return
-                    logger.warning(f"Upstox intraday candle fetch returned HTTP {resp.status}. Using fallback warmup.")
+                        logger.info(f"Upstox Intraday Candle API returned {len(candles_raw)} candles.")
+                    else:
+                        text = await resp.text()
+                        logger.warning(f"Upstox intraday candle fetch returned HTTP {resp.status}: {text}")
         except Exception as e:
-            logger.warning(f"Error fetching historical candles: {e}. Fallback to simulated warmup.")
+            logger.error(f"Error connecting to Upstox intraday candle endpoint: {e}")
 
-        self._generate_mock_historical_candles()
+        # 2. If session just opened (fewer than 20 candles), fetch previous session candles to ensure 9 EMA / VWAP warmup
+        if len(candles_raw) < 20:
+            today = datetime.now(IST).date()
+            from_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
+            to_date = today.strftime("%Y-%m-%d")
+            url_history = f"https://api.upstox.com/v2/historical-candle/{instrument_encoded}/3minute/{to_date}/{from_date}"
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url_history, headers=headers, timeout=12) as resp:
+                        if resp.status == 200:
+                            payload = await resp.json()
+                            history_candles = payload.get("data", {}).get("candles", [])
+                            logger.info(f"Fetched {len(history_candles)} prior historical 3m candles from Upstox.")
+                            # Combine: history first, then today's intraday
+                            candles_raw = history_candles + candles_raw
+                        else:
+                            logger.warning(f"Upstox historical candle query returned HTTP {resp.status}")
+            except Exception as e:
+                logger.error(f"Error fetching extended historical candles from Upstox: {e}")
 
-    def _generate_mock_historical_candles(self):
-        """Generates realistic synthetic warm-up data for paper trading or off-market hours."""
-        logger.info("Generating 60 synthetic 3-minute candles for indicator warmup...")
-        base_price = 24300.0
-        now = datetime.now(IST)
-        start_time = now - timedelta(minutes=180)
+        if not candles_raw:
+            logger.warning("No historical candles returned from Upstox yet (Market may be unopened or endpoint delayed). Indicator priming will start with incoming live ticks.")
+            return
+
+        # Upstox Candle format: [timestamp, open, high, low, close, volume, oi]
+        df = pd.DataFrame(candles_raw, columns=["timestamp", "open", "high", "low", "close", "volume", "oi"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.drop_duplicates(subset=["timestamp"]).sort_values(by="timestamp").reset_index(drop=True)
         
-        rows = []
-        curr_price = base_price
-        for i in range(60):
-            candle_time = start_time + timedelta(minutes=3 * i)
-            # slight upward trend with intraday noise
-            drift = (0.5 if i < 35 else 1.2) + (i % 3 - 1) * 2.0
-            open_p = curr_price
-            close_p = open_p + drift
-            high_p = max(open_p, close_p) + 4.0
-            low_p = min(open_p, close_p) - 3.0
-            volume = 120000 + (i * 1500) % 80000
-            curr_price = close_p
-            rows.append({
-                "timestamp": candle_time,
-                "open": open_p,
-                "high": high_p,
-                "low": low_p,
-                "close": close_p,
-                "volume": volume
-            })
-        self.candles_3m = pd.DataFrame(rows)
-        self.spot_ltp = float(rows[-1]["close"])
-        self.spot_change = round(self.spot_ltp - base_price, 2)
-        self.spot_change_pct = round((self.spot_change / base_price) * 100, 2)
-        logger.info(f"Warmup complete. Synthetic Spot LTP: {self.spot_ltp} (+{self.spot_change})")
+        self.candles_3m = df[["timestamp", "open", "high", "low", "close", "volume"]]
+        if len(self.candles_3m) > 0:
+            self.spot_ltp = float(self.candles_3m.iloc[-1]["close"])
+            open_price = float(self.candles_3m.iloc[0]["open"])
+            self.spot_change = round(self.spot_ltp - open_price, 2)
+            self.spot_change_pct = round((self.spot_change / open_price) * 100, 2) if open_price else 0.0
+
+        logger.info(f"Loaded {len(self.candles_3m)} REAL market candles from Upstox. Latest Spot LTP: {self.spot_ltp}")
 
     async def fetch_option_chain_and_select_strikes(self):
         """
-        Polls Upstox Option Chain endpoint, identifies nearest expiry ATM and 1-Strike ITM contracts,
-        and computes Open Interest changes.
+        Polls the real Upstox Option Chain endpoint, identifies real ATM contracts,
+        and computes Open Interest changes directly from live exchange data.
         """
-        if self.access_token == "PAPER_TRADING_DUMMY_TOKEN":
-            self._mock_option_chain()
-            return
-
         instrument_encoded = self.spot_instrument.replace("|", "%7C")
         url = f"https://api.upstox.com/v2/option/chain?instrument_key={instrument_encoded}"
         headers = {
@@ -146,16 +137,22 @@ class MarketDataEngine:
                         if records:
                             self.option_chain_data = records
                             self._process_option_chain_records(records)
+                            logger.info(
+                                f"REAL Option Chain refreshed. ATM CE: {self.atm_ce_contract.get('tradingsymbol')} (LTP: ₹{self.atm_ce_contract.get('ltp')}) | "
+                                f"ATM PE: {self.atm_pe_contract.get('tradingsymbol')} (LTP: ₹{self.atm_pe_contract.get('ltp')})"
+                            )
                             return
-                    logger.warning(f"Option chain fetch returned {resp.status}. Using fallback.")
+                    else:
+                        text = await resp.text()
+                        logger.warning(f"Upstox Option Chain returned HTTP {resp.status}: {text}")
         except Exception as e:
-            logger.warning(f"Error fetching option chain: {e}")
-        
-        self._mock_option_chain()
+            logger.error(f"Error fetching live Option Chain from Upstox: {e}")
 
     def _process_option_chain_records(self, records: List[Dict[str, Any]]):
-        """Identifies ATM / ITM strikes from raw Upstox option chain."""
-        # Find ATM strike closest to spot_ltp
+        """Extracts ATM Call and Put options directly from live Upstox Option Chain records."""
+        if not records or self.spot_ltp <= 0:
+            return
+
         strike_step = 50 if "NIFTY" in self.config.index_name else 100
         atm_strike = round(self.spot_ltp / strike_step) * strike_step
 
@@ -165,92 +162,74 @@ class MarketDataEngine:
                 call_data = item.get("call_options", {})
                 put_data = item.get("put_options", {})
                 
-                # Market data for Call
                 call_mkt = call_data.get("market_data", {})
                 put_mkt = put_data.get("market_data", {})
 
-                call_oi = call_mkt.get("oi", 100000)
-                call_prev_oi = call_mkt.get("prev_oi", call_oi)
+                call_oi = int(call_mkt.get("oi", 0))
+                call_prev_oi = int(call_mkt.get("prev_oi", call_oi))
                 call_oi_change = call_oi - call_prev_oi
-                call_oi_change_pct = (call_oi_change / call_prev_oi * 100) if call_prev_oi else 0.0
+                call_oi_change_pct = (call_oi_change / call_prev_oi * 100) if call_prev_oi > 0 else 0.0
 
-                put_oi = put_mkt.get("oi", 100000)
-                put_prev_oi = put_mkt.get("prev_oi", put_oi)
+                put_oi = int(put_mkt.get("oi", 0))
+                put_prev_oi = int(put_mkt.get("prev_oi", put_oi))
                 put_oi_change = put_oi - put_prev_oi
-                put_oi_change_pct = (put_oi_change / put_prev_oi * 100) if put_prev_oi else 0.0
+                put_oi_change_pct = (put_oi_change / put_prev_oi * 100) if put_prev_oi > 0 else 0.0
+
+                ce_key = call_data.get("instrument_key")
+                pe_key = put_data.get("instrument_key")
 
                 self.atm_ce_contract = {
-                    "instrument_key": call_data.get("instrument_key", f"NSE_FO|{int(atm_strike)}CE"),
-                    "tradingsymbol": f"{self.config.index_name} {int(atm_strike)} CE",
+                    "instrument_key": ce_key,
+                    "tradingsymbol": call_data.get("tradingsymbol", f"{self.config.index_name} {int(atm_strike)} CE"),
                     "strike": atm_strike,
-                    "ltp": float(call_mkt.get("ltp", 150.0)),
-                    "vwap": float(call_mkt.get("vwap", 145.0)),
+                    "ltp": float(call_mkt.get("ltp", 0.0)),
+                    "vwap": float(call_mkt.get("vwap", 0.0)),
                     "oi": call_oi,
                     "oi_change": call_oi_change,
                     "oi_change_pct": round(call_oi_change_pct, 2)
                 }
 
                 self.atm_pe_contract = {
-                    "instrument_key": put_data.get("instrument_key", f"NSE_FO|{int(atm_strike)}PE"),
-                    "tradingsymbol": f"{self.config.index_name} {int(atm_strike)} PE",
+                    "instrument_key": pe_key,
+                    "tradingsymbol": put_data.get("tradingsymbol", f"{self.config.index_name} {int(atm_strike)} PE"),
                     "strike": atm_strike,
-                    "ltp": float(put_mkt.get("ltp", 130.0)),
-                    "vwap": float(put_mkt.get("vwap", 132.0)),
+                    "ltp": float(put_mkt.get("ltp", 0.0)),
+                    "vwap": float(put_mkt.get("vwap", 0.0)),
                     "oi": put_oi,
                     "oi_change": put_oi_change,
                     "oi_change_pct": round(put_oi_change_pct, 2)
                 }
                 
-                self.option_ltp[self.atm_ce_contract["instrument_key"]] = self.atm_ce_contract["ltp"]
-                self.option_ltp[self.atm_pe_contract["instrument_key"]] = self.atm_pe_contract["ltp"]
+                if ce_key:
+                    self.option_ltp[ce_key] = self.atm_ce_contract["ltp"]
+                    if ce_key not in self.subscribed_keys:
+                        self.subscribed_keys.append(ce_key)
+                        if self.streamer and self.streamer.is_connected():
+                            self.streamer.subscribe([ce_key], MarketDataStreamerV3.ModeFull)
+
+                if pe_key:
+                    self.option_ltp[pe_key] = self.atm_pe_contract["ltp"]
+                    if pe_key not in self.subscribed_keys:
+                        self.subscribed_keys.append(pe_key)
+                        if self.streamer and self.streamer.is_connected():
+                            self.streamer.subscribe([pe_key], MarketDataStreamerV3.ModeFull)
                 break
-
-    def _mock_option_chain(self):
-        """Simulates ATM Call and Put options with real-time dynamic OI metrics."""
-        strike_step = 50 if "NIFTY" in self.config.index_name else 100
-        atm_strike = round(self.spot_ltp / strike_step) * strike_step
-        
-        # Calculate realistic synthetic option prices
-        ce_price = max(100.0, round(140.0 + (self.spot_ltp - atm_strike) * 0.55, 2))
-        pe_price = max(80.0, round(125.0 - (self.spot_ltp - atm_strike) * 0.45, 2))
-        
-        ce_key = f"NSE_FO|{self.config.index_name}_{int(atm_strike)}_CE"
-        pe_key = f"NSE_FO|{self.config.index_name}_{int(atm_strike)}_PE"
-
-        self.atm_ce_contract = {
-            "instrument_key": ce_key,
-            "tradingsymbol": f"{self.config.index_name} {int(atm_strike)} CE",
-            "strike": atm_strike,
-            "ltp": ce_price,
-            "vwap": round(ce_price - 3.5, 2),  # CE premium above its VWAP
-            "oi": 2450000,
-            "oi_change": -320000,              # Short covering in Call (-13.0%)
-            "oi_change_pct": -13.06
-        }
-        self.atm_pe_contract = {
-            "instrument_key": pe_key,
-            "tradingsymbol": f"{self.config.index_name} {int(atm_strike)} PE",
-            "strike": atm_strike,
-            "ltp": pe_price,
-            "vwap": round(pe_price + 2.0, 2),
-            "oi": 3120000,
-            "oi_change": 450000,               # Put writing (+14.4%)
-            "oi_change_pct": 14.42
-        }
-        self.option_ltp[ce_key] = ce_price
-        self.option_ltp[pe_key] = pe_price
 
     def register_on_candle_close(self, callback: Callable[[pd.DataFrame], None]):
         """Registers a listener for completed 3-minute candles."""
         self.on_candle_close_callbacks.append(callback)
 
     def on_tick(self, instrument_key: str, ltp: float, volume: int = 0):
-        """Processes incoming tick updates from live WebSocket or Paper Feeder."""
+        """Processes real-time ticks arriving from Upstox MarketDataStreamerV3 WebSocket."""
         now = datetime.now(IST)
         
         if instrument_key == self.spot_instrument:
+            if self.spot_ltp > 0:
+                self.spot_change = round(ltp - self.spot_ltp, 2)
+                self.spot_change_pct = round((self.spot_change / self.spot_ltp) * 100, 2)
             self.spot_ltp = ltp
-            # Update current forming 3m candle
+
+            # Aggregate into 3-minute candle bucket
             candle_bucket = now.replace(second=0, microsecond=0)
             candle_bucket = candle_bucket - timedelta(minutes=candle_bucket.minute % 3)
 
@@ -290,48 +269,84 @@ class MarketDataEngine:
         else:
             # Option tick
             self.option_ltp[instrument_key] = ltp
-            if self.atm_ce_contract and self.atm_ce_contract["instrument_key"] == instrument_key:
+            if self.atm_ce_contract and self.atm_ce_contract.get("instrument_key") == instrument_key:
                 self.atm_ce_contract["ltp"] = ltp
-            elif self.atm_pe_contract and self.atm_pe_contract["instrument_key"] == instrument_key:
+            elif self.atm_pe_contract and self.atm_pe_contract.get("instrument_key") == instrument_key:
                 self.atm_pe_contract["ltp"] = ltp
 
-    async def start_streaming(self):
-        """Starts WebSocket streaming via Upstox MarketDataStreamerV3 or Paper Feeder."""
-        self.is_running = True
-        logger.info("Initializing Upstox Market Data streaming loop...")
-        
-        # If in paper mode with dummy token or off-market hours, run background tick generator
-        asyncio.create_task(self._paper_market_loop())
+    def _handle_streamer_feed(self, message: Any):
+        """Decodes incoming WebSocket feed from Upstox MarketDataStreamerV3."""
+        try:
+            feeds = message.get("feeds", {}) if isinstance(message, dict) else {}
+            for instrument_key, feed_data in feeds.items():
+                # Extract full market data LTP and volume
+                ltpc = feed_data.get("fullFeed", {}).get("marketFF", {}).get("ltpc", {})
+                if not ltpc:
+                    ltpc = feed_data.get("ltpc", {})
 
-    async def _paper_market_loop(self):
-        """Continuous paper tick generator for robust testing and live state updates."""
-        import random
+                ltp = float(ltpc.get("ltp", 0.0))
+                volume = int(feed_data.get("fullFeed", {}).get("marketFF", {}).get("volume", 0))
+
+                if ltp > 0:
+                    self.on_tick(instrument_key, ltp, volume)
+        except Exception as e:
+            logger.error(f"Error parsing Upstox live feed message: {e}")
+
+    async def start_streaming(self):
+        """Starts real live WebSocket streaming via Upstox MarketDataStreamerV3."""
+        self.is_running = True
+        logger.info(f"Connecting to Upstox MarketDataStreamerV3 WebSocket for {self.subscribed_keys}...")
+        
+        try:
+            # Configure Upstox API Client
+            configuration = upstox_client.Configuration()
+            configuration.access_token = self.access_token
+            api_client = upstox_client.ApiClient(configuration)
+
+            self.streamer = MarketDataStreamerV3(api_client)
+            
+            def on_open():
+                logger.info(f"Connected to live Upstox WebSocket! Subscribing to: {self.subscribed_keys}")
+                self.streamer.subscribe(self.subscribed_keys, MarketDataStreamerV3.ModeFull)
+
+            def on_message(message):
+                self._handle_streamer_feed(message)
+
+            def on_error(error):
+                logger.error(f"Upstox WebSocket error: {error}")
+
+            def on_close():
+                logger.warning("Upstox WebSocket disconnected.")
+
+            self.streamer.on("open", on_open)
+            self.streamer.on("message", on_message)
+            self.streamer.on("error", on_error)
+            self.streamer.on("close", on_close)
+
+            # Connect streamer asynchronously
+            self.streamer.connect()
+        except Exception as e:
+            logger.error(f"Failed to initialize Upstox MarketDataStreamerV3: {e}")
+
+        # Start background Option Chain refresher (polls every 20 seconds during trading hours)
+        self._oi_poll_task = asyncio.create_task(self._live_option_chain_poll_loop())
+
+    async def _live_option_chain_poll_loop(self):
+        """Polls Upstox Option Chain every 20s to refresh live OI and Greeks."""
         while self.is_running:
             try:
-                # Slight micro-fluctuation in spot
-                delta = random.choice([-1.5, -0.75, 0.0, 0.5, 1.25, 2.0])
-                new_spot = round(self.spot_ltp + delta, 2)
-                self.on_tick(self.spot_instrument, new_spot, volume=random.randint(500, 3500))
-
-                # Update option price accordingly
-                if self.atm_ce_contract:
-                    opt_delta = round(delta * 0.52, 2)
-                    new_opt_ltp = round(max(30.0, self.atm_ce_contract["ltp"] + opt_delta), 2)
-                    self.on_tick(self.atm_ce_contract["instrument_key"], new_opt_ltp)
-
-                # Periodically update option chain
-                now = datetime.now(IST)
-                if (now - self._last_oi_poll).total_seconds() >= 15:
-                    self._last_oi_poll = now
+                await asyncio.sleep(20)
+                if self.is_running and self.spot_ltp > 0:
                     await self.fetch_option_chain_and_select_strikes()
-
-                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"Error in market feed loop: {e}")
-                await asyncio.sleep(2.0)
+                logger.error(f"Error in Option Chain poll loop: {e}")
 
     def stop(self):
         self.is_running = False
+        if self._oi_poll_task:
+            self._oi_poll_task.cancel()
         if self.streamer:
             try:
                 self.streamer.disconnect()

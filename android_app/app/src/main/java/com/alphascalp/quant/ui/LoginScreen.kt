@@ -18,8 +18,12 @@ import androidx.compose.ui.unit.sp
 import com.alphascalp.quant.ui.theme.*
 
 @Composable
-fun LoginScreen(onLoginSuccess: (String) -> Unit) {
+fun LoginScreen(
+    initialProjectId: String,
+    onLoginSuccess: (email: String, projectId: String) -> Unit
+) {
     var email by remember { mutableStateOf("operator@alphascalp.quant") }
+    var projectId by remember { mutableStateOf(initialProjectId) }
 
     Column(
         modifier = Modifier
@@ -48,7 +52,7 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
                 Text(
-                    text = "● 12MS GATEWAY",
+                    text = "● LIVE CLOUD SYNC",
                     color = EmeraldBright,
                     fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace,
@@ -88,7 +92,7 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                         .padding(horizontal = 10.dp, vertical = 3.dp)
                 ) {
                     Text(
-                        text = "● BIOMETRIC & OAUTH SECURITY",
+                        text = "● ZERO DUMMY DATA // LIVE STREAM",
                         color = EmeraldBright,
                         fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace,
@@ -105,41 +109,12 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Dedicated single-operator execution terminal for Nifty 50 & BankNifty.",
+                    text = "Connects directly to your GitHub Actions scalp bot & Upstox market feeds via Firestore.",
                     color = TextMuted,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 4.dp)
                 )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Telemetry Boxes
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .background(Surface, RoundedCornerShape(4.dp))
-                            .border(1.dp, BorderSubtle, RoundedCornerShape(4.dp))
-                            .padding(8.dp)
-                    ) {
-                        Text("UPSTOX V3 API", color = TextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                        Text("● READY (12ms)", color = EmeraldBright, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                    }
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .background(Surface, RoundedCornerShape(4.dp))
-                            .border(1.dp, BorderSubtle, RoundedCornerShape(4.dp))
-                            .padding(8.dp)
-                    ) {
-                        Text("SAFETY GUARD", color = TextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                        Text("● PAPER MODE ON", color = Amber, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                    }
-                }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -157,16 +132,32 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                     )
                 )
 
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = projectId,
+                    onValueChange = { projectId = it },
+                    label = { Text("FIREBASE PROJECT ID", fontSize = 10.sp, fontFamily = FontFamily.Monospace) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Cyan,
+                        unfocusedBorderColor = BorderSubtle,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Button(
-                    onClick = { onLoginSuccess(email) },
+                    onClick = { onLoginSuccess(email, projectId) },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Emerald)
                 ) {
                     Text(
-                        text = "AUTHENTICATE OPERATOR SESSION",
+                        text = "CONNECT TO LIVE WORKFLOW",
                         color = Canvas,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
@@ -177,8 +168,8 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "[Native Android Mode] Ready for live scalping session",
-                    color = Amber,
+                    text = "Displays real-time market data, live gates & active orders only",
+                    color = TextDim,
                     fontSize = 9.sp,
                     fontFamily = FontFamily.Monospace
                 )
@@ -187,7 +178,7 @@ fun LoginScreen(onLoginSuccess: (String) -> Unit) {
 
         // Footer Note
         Text(
-            text = "🔒 FIPS 140-3 LEVEL 4 HSM ENCRYPTED // UPSTOX V3 GATEWAY",
+            text = "🔒 UPSTOX V3 GATEWAY // FIRESTORE STREAM ENCRYPTED",
             color = TextDim,
             fontSize = 9.sp,
             fontFamily = FontFamily.Monospace,
