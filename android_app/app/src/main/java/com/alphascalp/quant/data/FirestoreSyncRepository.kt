@@ -52,11 +52,26 @@ class FirestoreSyncRepository(private val context: Context) {
                 return@withContext parseFirestoreTelemetry(response)
             } else {
                 Log.w(TAG, "Firestore live_state fetch HTTP $responseCode")
-                return@withContext null
+                val (status, detail) = when (responseCode) {
+                    403 -> Pair("RULES 403", "Firestore Rules block read. In Firebase Console > Firestore Database > Rules, set: allow read, write: if true;")
+                    404 -> Pair("PROJECT 404", "Project '$projectId' not found or 'live_state/current' not written yet. Check Project ID.")
+                    else -> Pair("HTTP $responseCode", "Server returned HTTP $responseCode for project '$projectId'.")
+                }
+                return@withContext TelemetryState(
+                    heartbeat = status,
+                    gates = listOf(
+                        GateCheck(1, "Cloud Bridge Diagnostics", false, status, detail)
+                    )
+                )
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching live state from Firestore: ${e.message}")
-            return@withContext null
+            return@withContext TelemetryState(
+                heartbeat = "CONN ERR",
+                gates = listOf(
+                    GateCheck(1, "Network Status", false, "ERROR", e.localizedMessage ?: "Cannot connect to Firestore")
+                )
+            )
         }
     }
 
@@ -185,12 +200,13 @@ class FirestoreSyncRepository(private val context: Context) {
             for (i in 0 until arrayValues.length()) {
                 val gateObj = arrayValues.optJSONObject(i)?.optJSONObject("mapValue")?.optJSONObject("fields")
                 if (gateObj != null) {
+                    val passVal = getBoolean(gateObj, "is_pass", false) || getBoolean(gateObj, "pass", false)
                     gatesList.add(
                         GateCheck(
                             id = getInt(gateObj, "id", i + 1),
                             name = getString(gateObj, "name", "Gate ${i + 1}"),
-                            isPass = getBoolean(gateObj, "is_pass", false),
-                            label = getString(gateObj, "label", "WAIT"),
+                            isPass = passVal,
+                            label = getString(gateObj, "label", if (passVal) "PASS" else "WAIT"),
                             value = getString(gateObj, "value", "")
                         )
                     )
@@ -202,6 +218,8 @@ class FirestoreSyncRepository(private val context: Context) {
         var activePos: ActivePosition? = null
         val activeField = fields.optJSONObject("active_position")?.optJSONObject("mapValue")?.optJSONObject("fields")
         if (activeField != null && getBoolean(activeField, "active", false)) {
+            val timeSl = getString(activeField, "time_sl_status", "")
+            val timeSlResolved = if (timeSl.isNotBlank()) timeSl else getString(activeField, "time_sl_remaining", "Scanning")
             activePos = ActivePosition(
                 strike = getString(activeField, "strike", "ATM OPTION"),
                 optionType = getString(activeField, "option_type", "CE"),
@@ -212,7 +230,7 @@ class FirestoreSyncRepository(private val context: Context) {
                 pointsCaptured = getDouble(activeField, "points_captured", 0.0),
                 lots = getInt(activeField, "lots", 1),
                 qty = getInt(activeField, "qty", 75),
-                timeSlStatus = getString(activeField, "time_sl_remaining", "Scanning"),
+                timeSlStatus = timeSlResolved,
                 isBreakeven = getBoolean(activeField, "is_breakeven", false),
                 isPartial = getBoolean(activeField, "is_partial", false)
             )
@@ -233,7 +251,7 @@ class FirestoreSyncRepository(private val context: Context) {
             consecutiveSl = consecutiveSl,
             maxConsecutiveSl = maxConsecutiveSl,
             signalStatus = signalStatus,
-            gates = gatesList,
+            gates = if (gatesList.isNotEmpty()) gatesList else TelemetryState().gates,
             activePosition = activePos
         )
     }
@@ -266,24 +284,36 @@ class FirestoreSyncRepository(private val context: Context) {
     }
 
     private fun getString(obj: JSONObject, key: String, default: String): String {
-        return obj.optJSONObject(key)?.optString("stringValue") ?: default
+        val f = obj.optJSONObject(key) ?: return default
+        return when {
+            f.has("stringValue") -> f.optString("stringValue", default)
+            f.has("integerValue") -> f.optString("integerValue", default)
+            f.has("doubleValue") -> f.optString("doubleValue", default)
+            f.has("booleanValue") -> f.optBoolean("booleanValue").toString()
+            else -> default
+        }
     }
 
     private fun getDouble(obj: JSONObject, key: String, default: Double): Double {
         val f = obj.optJSONObject(key) ?: return default
         if (f.has("doubleValue")) return f.optDouble("doubleValue", default)
-        if (f.has("integerValue")) return f.optLong("integerValue", default.toLong()).toDouble()
+        if (f.has("integerValue")) return f.optString("integerValue").toDoubleOrNull() ?: default
+        if (f.has("stringValue")) return f.optString("stringValue").toDoubleOrNull() ?: default
         return default
     }
 
     private fun getInt(obj: JSONObject, key: String, default: Int): Int {
         val f = obj.optJSONObject(key) ?: return default
-        if (f.has("integerValue")) return f.optInt("integerValue", default)
+        if (f.has("integerValue")) return f.optString("integerValue").toIntOrNull() ?: default
         if (f.has("doubleValue")) return f.optDouble("doubleValue", default.toDouble()).toInt()
+        if (f.has("stringValue")) return f.optString("stringValue").toIntOrNull() ?: default
         return default
     }
 
     private fun getBoolean(obj: JSONObject, key: String, default: Boolean): Boolean {
-        return obj.optJSONObject(key)?.optBoolean("booleanValue", default) ?: default
+        val f = obj.optJSONObject(key) ?: return default
+        if (f.has("booleanValue")) return f.optBoolean("booleanValue", default)
+        if (f.has("stringValue")) return f.optString("stringValue").toBoolean()
+        return default
     }
 }

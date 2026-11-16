@@ -101,6 +101,9 @@ class ScalpBotSystem:
 
     async def initialize(self):
         """Warm up historical candles and fetch initial option chain."""
+        # 1. Immediate initial sync so the mobile app sees ONLINE heartbeat immediately
+        self.sync_state_to_firebase(force=True)
+
         await self.market_data.warm_up_historical_data()
         await self.market_data.fetch_option_chain_and_select_strikes()
         self.market_data.register_on_candle_close(self.on_candle_closed)
@@ -116,6 +119,10 @@ class ScalpBotSystem:
                 atm_pe=self.market_data.atm_pe_contract or {},
                 current_time=now
             )
+
+        # 2. Push full primed state with spot LTP and gate evaluations to Firestore
+        self.sync_state_to_firebase(force=True)
+        logger.info(f"Initial state synchronized to Firestore: Spot={self.market_data.spot_ltp}, Heartbeat=ONLINE")
 
     def on_candle_closed(self, candles_df):
         """Triggered whenever a 3-minute candle completes."""
@@ -218,12 +225,13 @@ class ScalpBotSystem:
             try:
                 now = datetime.now(IST)
 
-                # Check 6-Hour GitHub Actions & Market Cutoff at 15:10 IST
-                if now.time() >= self.config.auto_square_off_time:
-                    logger.warning("Auto square-off time (15:10 IST) reached! Closing positions and exiting session...")
-                    self.execution_manager.emergency_square_off("15:10 IST Market Close / GitHub Actions Cutoff")
-                    self.is_running = False
-                    break
+                # If session started during active market hours (before 15:10 IST), auto square-off at 15:10 IST
+                if start_time.time() < self.config.auto_square_off_time:
+                    if now.time() >= self.config.auto_square_off_time:
+                        logger.warning("Auto square-off time (15:10 IST) reached! Closing positions and exiting session...")
+                        self.execution_manager.emergency_square_off("15:10 IST Market Close / Cutoff")
+                        self.is_running = False
+                        break
 
                 # Update active trade option pricing and trailing stops
                 if self.execution_manager.has_active_position():
