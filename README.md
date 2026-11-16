@@ -187,13 +187,27 @@ In your GitHub repository, navigate to **Settings -> Secrets and variables -> Ac
 | `UPSTOX_PIN` | - | **Not Needed in Option B** |
 | `UPSTOX_TOTP_SECRET` | - | **Not Needed in Option B** |
 
-### 4. Deploying the Mobile Dashboard (`/dashboard`)
-The dashboard is a static React PWA that can be hosted completely free on:
-- **Cloudflare Pages**: Connect repo, set build directory `dashboard`, build command `npm run build`, output `dist`.
-- **Vercel / Netlify**: One-click import with root directory set to `dashboard`.
-- **Firebase Hosting**: Run `firebase deploy --only hosting`.
+### 4. Native Android Mobile App (`/android_app`)
+For a real, native Android installation (bypassing any browser/PWA flow), compile the native Jetpack Compose APK locally using the dedicated build pipeline:
 
-Once deployed, open the URL in Chrome (Android) or Safari (iOS) and tap **"Add to Home Screen"** to run it as a full-screen native mobile application.
+```powershell
+cd android_app
+.\gradlew.bat assembleRelease
+```
+
+The compiled and signed release APK is generated at:
+`android_app/app/build/outputs/apk/release/app-release.apk`
+
+#### The Underlying Build Stack:
+| Component | What We Are Using | Purpose |
+| :--- | :--- | :--- |
+| **Build Engine** | Gradle 8.14 via `gradlew.bat` | Orchestrates the entire build pipeline |
+| **Android Plugin** | AGP 8.7.x | Compiles Android resources, manifests, and packaging |
+| **Language & Compiler** | Kotlin 2.0.21 (JDK 17/21 target) | Compiles Kotlin and Jetpack Compose code |
+| **UI Framework** | Jetpack Compose + Material 3 | Declarative Android UI (Obsidian Terminal Design) |
+| **Code Shrinker** | R8 (with `proguard-android.txt`) | Strips dead code (`-dontobfuscate`, `-dontoptimize` to protect Compose runtime) |
+| **Signing** | Release Keystore (`release.keystore`) | Signs the APK automatically with v2 & v3 signature schemes |
+| **Target SDK** | Android SDK 35 (Min SDK 26) | Compatible with Android 8.0 up to Android 15 |
 
 ---
 
