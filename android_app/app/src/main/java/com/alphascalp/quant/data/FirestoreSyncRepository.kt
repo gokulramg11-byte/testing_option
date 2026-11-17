@@ -191,8 +191,11 @@ class FirestoreSyncRepository(private val context: Context) {
         val consecutiveSl = getInt(fields, "consecutive_sl", 0)
         val maxConsecutiveSl = getInt(fields, "max_consecutive_sl", 3)
         val signalStatus = getString(fields, "signal_status", "NO_TRADE")
+        val marketBias = getString(fields, "market_bias", "NEUTRAL")
+        val rawReadiness = getInt(fields, "readiness_pct", 0)
+        val rawPassing = getInt(fields, "passing_count", 0)
 
-        // Parse 7-Point Gates
+        // Parse 7-Point Gates with Live Proximity
         val gatesList = mutableListOf<GateCheck>()
         val gatesField = fields.optJSONObject("gates")
         val arrayValues = gatesField?.optJSONObject("arrayValue")?.optJSONArray("values")
@@ -201,17 +204,49 @@ class FirestoreSyncRepository(private val context: Context) {
                 val gateObj = arrayValues.optJSONObject(i)?.optJSONObject("mapValue")?.optJSONObject("fields")
                 if (gateObj != null) {
                     val passVal = getBoolean(gateObj, "is_pass", false) || getBoolean(gateObj, "pass", false)
+                    val prox = getInt(gateObj, "proximity_pct", if (passVal) 100 else 35)
+                    val proxText = getString(gateObj, "proximity_text", "")
                     gatesList.add(
                         GateCheck(
                             id = getInt(gateObj, "id", i + 1),
                             name = getString(gateObj, "name", "Gate ${i + 1}"),
                             isPass = passVal,
-                            label = getString(gateObj, "label", if (passVal) "PASS" else "WAIT"),
-                            value = getString(gateObj, "value", "")
+                            label = getString(gateObj, "label", if (passVal) "PASS" else "$prox%"),
+                            value = getString(gateObj, "value", ""),
+                            proximityPct = prox,
+                            proximityText = proxText
                         )
                     )
                 }
             }
+        }
+
+        val calculatedPassing = if (rawPassing > 0) rawPassing else gatesList.count { it.isPass }
+        val calculatedReadiness = if (rawReadiness > 0) rawReadiness else if (gatesList.isNotEmpty()) (gatesList.sumOf { it.proximityPct } / gatesList.size) else (calculatedPassing * 100 / 7)
+
+        // Parse Active ATM Option Contracts
+        var atmCeContract: AtmContract? = null
+        val ceField = fields.optJSONObject("atm_ce")?.optJSONObject("mapValue")?.optJSONObject("fields")
+        if (ceField != null) {
+            atmCeContract = AtmContract(
+                strike = getDouble(ceField, "strike", 0.0),
+                symbol = getString(ceField, "symbol", ""),
+                ltp = getDouble(ceField, "ltp", 0.0),
+                vwap = getDouble(ceField, "vwap", 0.0),
+                oiChangePct = getDouble(ceField, "oi_change_pct", 0.0)
+            )
+        }
+
+        var atmPeContract: AtmContract? = null
+        val peField = fields.optJSONObject("atm_pe")?.optJSONObject("mapValue")?.optJSONObject("fields")
+        if (peField != null) {
+            atmPeContract = AtmContract(
+                strike = getDouble(peField, "strike", 0.0),
+                symbol = getString(peField, "symbol", ""),
+                ltp = getDouble(peField, "ltp", 0.0),
+                vwap = getDouble(peField, "vwap", 0.0),
+                oiChangePct = getDouble(peField, "oi_change_pct", 0.0)
+            )
         }
 
         // Parse Active Position
@@ -251,6 +286,11 @@ class FirestoreSyncRepository(private val context: Context) {
             consecutiveSl = consecutiveSl,
             maxConsecutiveSl = maxConsecutiveSl,
             signalStatus = signalStatus,
+            marketBias = marketBias,
+            readinessPct = calculatedReadiness,
+            passingCount = calculatedPassing,
+            atmCe = atmCeContract,
+            atmPe = atmPeContract,
             gates = if (gatesList.isNotEmpty()) gatesList else TelemetryState().gates,
             activePosition = activePos
         )

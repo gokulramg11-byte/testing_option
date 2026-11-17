@@ -5,7 +5,9 @@ data class GateCheck(
     val name: String,
     val isPass: Boolean,
     val label: String,
-    val value: String
+    val value: String,
+    val proximityPct: Int = 0,
+    val proximityText: String = ""
 )
 
 data class ActivePosition(
@@ -21,6 +23,14 @@ data class ActivePosition(
     val timeSlStatus: String,
     val isBreakeven: Boolean,
     val isPartial: Boolean
+)
+
+data class AtmContract(
+    val strike: Double = 0.0,
+    val symbol: String = "",
+    val ltp: Double = 0.0,
+    val vwap: Double = 0.0,
+    val oiChangePct: Double = 0.0
 )
 
 data class TradeRecord(
@@ -52,14 +62,19 @@ data class TelemetryState(
     val consecutiveSl: Int = 0,
     val maxConsecutiveSl: Int = 3,
     val signalStatus: String = "STANDBY",
+    val marketBias: String = "NEUTRAL",
+    val readinessPct: Int = 0,
+    val passingCount: Int = 0,
+    val atmCe: AtmContract? = null,
+    val atmPe: AtmContract? = null,
     val gates: List<GateCheck> = listOf(
-        GateCheck(1, "1. Active Time Window", false, "WAIT", "Awaiting live session (09:30-12:00 / 13:30-15:10 IST)"),
-        GateCheck(2, "2. Spot vs VWAP & 9 EMA", false, "WAIT", "Awaiting live candle calculation"),
-        GateCheck(3, "3. 9 EMA Pullback Touch", false, "WAIT", "Awaiting closed 3m candle evaluation"),
-        GateCheck(4, "4. Trigger Candle Close", false, "WAIT", "Awaiting trigger candle"),
-        GateCheck(5, "5. Stoch RSI Cross", false, "WAIT", "Awaiting momentum confirmation"),
-        GateCheck(6, "6. 1.5x Volume Surge", false, "WAIT", "Awaiting volume validation"),
-        GateCheck(7, "7. Option VWAP & OI Filter", false, "WAIT", "Awaiting live Option Chain feed")
+        GateCheck(1, "1. Active Time Window", false, "WAIT", "Awaiting live session (09:30-12:00 / 13:30-15:10 IST)", 30, "Time Window Gate"),
+        GateCheck(2, "2. Spot vs VWAP & 9 EMA", false, "WAIT", "Awaiting live candle calculation", 40, "Calculating EMA & VWAP distance"),
+        GateCheck(3, "3. 9 EMA Pullback Touch", false, "WAIT", "Awaiting closed 3m candle evaluation", 20, "Monitoring pullback touch"),
+        GateCheck(4, "4. Trigger Candle Close", false, "WAIT", "Awaiting trigger candle", 50, "Checking candle direction"),
+        GateCheck(5, "5. Stoch RSI Cross", false, "WAIT", "Awaiting momentum confirmation", 35, "Tracking %K and %D crossover"),
+        GateCheck(6, "6. 1.5x Volume Surge", false, "WAIT", "Awaiting volume validation", 25, "Comparing against 15 SMA"),
+        GateCheck(7, "7. Option VWAP & OI Filter", false, "WAIT", "Awaiting live Option Chain feed", 45, "Comparing Premium vs VWAP & OI")
     ),
     val activePosition: ActivePosition? = null
 )

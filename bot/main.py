@@ -173,6 +173,9 @@ class ScalpBotSystem:
             candles_left = max(0, self.config.time_sl_candles - active_pos.get("candles_held", 0))
             time_sl_remaining = f"Candle {active_pos.get('candles_held', 0) + 1}/3 ({candles_left * 3}m remaining)"
 
+        atm_ce = self.market_data.atm_ce_contract
+        atm_pe = self.market_data.atm_pe_contract
+
         state_payload = {
             "heartbeat": "ONLINE" if self.is_running else "OFFLINE",
             "mode": "PAPER" if self.config.dry_run else "LIVE",
@@ -192,7 +195,23 @@ class ScalpBotSystem:
             "halt_reason": risk_summary["halt_reason"],
             "signal_status": self.latest_gatekeeper_result.get("signal", "NO_TRADE"),
             "market_bias": self.latest_gatekeeper_result.get("bias", "NEUTRAL"),
+            "readiness_pct": self.latest_gatekeeper_result.get("readiness_pct", 0),
+            "passing_count": self.latest_gatekeeper_result.get("passing_count", 0),
             "gates": self.latest_gatekeeper_result.get("gates", []),
+            "atm_ce": {
+                "strike": atm_ce.get("strike", 0) if atm_ce else 0,
+                "symbol": atm_ce.get("tradingsymbol", "") if atm_ce else "",
+                "ltp": atm_ce.get("ltp", 0.0) if atm_ce else 0.0,
+                "vwap": atm_ce.get("vwap", 0.0) if atm_ce else 0.0,
+                "oi_change_pct": atm_ce.get("oi_change_pct", 0.0) if atm_ce else 0.0
+            } if atm_ce else None,
+            "atm_pe": {
+                "strike": atm_pe.get("strike", 0) if atm_pe else 0,
+                "symbol": atm_pe.get("tradingsymbol", "") if atm_pe else "",
+                "ltp": atm_pe.get("ltp", 0.0) if atm_pe else 0.0,
+                "vwap": atm_pe.get("vwap", 0.0) if atm_pe else 0.0,
+                "oi_change_pct": atm_pe.get("oi_change_pct", 0.0) if atm_pe else 0.0
+            } if atm_pe else None,
             "active_position": {
                 "active": True,
                 "strike": active_pos["strike"],
@@ -232,6 +251,20 @@ class ScalpBotSystem:
                         self.execution_manager.emergency_square_off("15:10 IST Market Close / Cutoff")
                         self.is_running = False
                         break
+
+                # Live Gate & Strategy Proximity Evaluation on every loop
+                if len(self.market_data.candles_3m) >= 20:
+                    df = self.market_data.candles_3m.copy()
+                    if self.market_data.spot_ltp > 0:
+                        df.iloc[-1, df.columns.get_loc("close")] = self.market_data.spot_ltp
+                    
+                    df_ind = apply_all_indicators(df)
+                    self.latest_gatekeeper_result = self.gatekeeper.evaluate_gates(
+                        df=df_ind,
+                        atm_ce=self.market_data.atm_ce_contract or {},
+                        atm_pe=self.market_data.atm_pe_contract or {},
+                        current_time=now
+                    )
 
                 # Update active trade option pricing and trailing stops
                 if self.execution_manager.has_active_position():

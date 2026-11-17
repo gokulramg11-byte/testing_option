@@ -52,6 +52,7 @@ class MarketDataEngine:
         self.is_running: bool = False
         self._last_oi_poll: datetime = datetime.min.replace(tzinfo=IST)
         self._oi_poll_task: Optional[asyncio.Task] = None
+        self._quote_poll_task: Optional[asyncio.Task] = None
 
     async def warm_up_historical_data(self):
         """
@@ -290,11 +291,17 @@ class MarketDataEngine:
         """Registers a listener for completed 3-minute candles."""
         self.on_candle_close_callbacks.append(callback)
 
+    def _is_spot_instrument(self, key: str) -> bool:
+        """Determines if the given instrument key corresponds to the underlying index."""
+        k = key.replace(":", "|").upper().strip()
+        spot_k = self.spot_instrument.replace(":", "|").upper().strip()
+        return (k == spot_k) or ("NIFTY" in k and "50" in k and "BANK" not in k and "CE" not in k and "PE" not in k)
+
     def on_tick(self, instrument_key: str, ltp: float, volume: int = 0):
-        """Processes real-time ticks arriving from Upstox MarketDataStreamerV3 WebSocket."""
+        """Processes real-time ticks arriving from Upstox REST or WebSocket."""
         now = datetime.now(IST)
         
-        if instrument_key == self.spot_instrument:
+        if self._is_spot_instrument(instrument_key):
             self.spot_ltp = ltp
             if self.spot_open_price > 0:
                 self.spot_change = round(ltp - self.spot_open_price, 2)
@@ -341,11 +348,16 @@ class MarketDataEngine:
                     cb(self.candles_3m)
         else:
             # Option tick
-            self.option_ltp[instrument_key] = ltp
-            if self.atm_ce_contract and self.atm_ce_contract.get("instrument_key") == instrument_key:
-                self.atm_ce_contract["ltp"] = ltp
-            elif self.atm_pe_contract and self.atm_pe_contract.get("instrument_key") == instrument_key:
-                self.atm_pe_contract["ltp"] = ltp
+            norm_key = instrument_key.replace(":", "|").strip()
+            self.option_ltp[norm_key] = ltp
+            if self.atm_ce_contract:
+                ce_k = (self.atm_ce_contract.get("instrument_key") or "").replace(":", "|").strip()
+                if norm_key == ce_k or ("CE" in norm_key and str(int(self.atm_ce_contract.get("strike", 0))) in norm_key):
+                    self.atm_ce_contract["ltp"] = ltp
+            if self.atm_pe_contract:
+                pe_k = (self.atm_pe_contract.get("instrument_key") or "").replace(":", "|").strip()
+                if norm_key == pe_k or ("PE" in norm_key and str(int(self.atm_pe_contract.get("strike", 0))) in norm_key):
+                    self.atm_pe_contract["ltp"] = ltp
 
     def _handle_streamer_feed(self, message: Any):
         """Decodes incoming WebSocket feed from Upstox MarketDataStreamerV3."""
@@ -354,7 +366,7 @@ class MarketDataEngine:
             for instrument_key, feed_data in feeds.items():
                 ff = feed_data.get("fullFeed", {})
                 market_ff = ff.get("marketFF", {}) if isinstance(ff, dict) else {}
-                ltpc = market_ff.get("ltpc", {}) or feed_data.get("ltpc", {})
+                ltpc = market_ff.get("ltpc", {}) or feed_data.get("ltpc", {}) or {}
 
                 ltp = float(ltpc.get("ltp", 0.0))
                 volume = int(market_ff.get("volume", 0))
@@ -364,8 +376,42 @@ class MarketDataEngine:
         except Exception as e:
             logger.error(f"Error parsing Upstox live feed message: {e}")
 
+    async def poll_realtime_quotes(self):
+        """
+        Polls Upstox Market Quote API for spot index and active ATM option contracts.
+        Ensures continuous, guaranteed real-time updates every 2.5s even if WebSocket pauses.
+        """
+        keys_to_fetch = [self.spot_instrument]
+        if self.atm_ce_contract and self.atm_ce_contract.get("instrument_key"):
+            keys_to_fetch.append(self.atm_ce_contract["instrument_key"])
+        if self.atm_pe_contract and self.atm_pe_contract.get("instrument_key"):
+            keys_to_fetch.append(self.atm_pe_contract["instrument_key"])
+
+        encoded_keys = ",".join(k.replace("|", "%7C") for k in keys_to_fetch)
+        url = f"https://api.upstox.com/v2/market-quote/ltp?instrument_key={encoded_keys}"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.access_token}"
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=5) as resp:
+                    if resp.status == 200:
+                        payload = await resp.json()
+                        data = payload.get("data", {})
+                        for raw_key, item in data.items():
+                            inst_key = item.get("instrument_key", raw_key).replace(":", "|")
+                            ltp = float(item.get("last_price", 0.0))
+                            if ltp > 0:
+                                self.on_tick(inst_key, ltp)
+                    elif resp.status == 401:
+                        logger.error("Upstox Access Token Expired during quote polling!")
+        except Exception as e:
+            logger.debug(f"Quote poll notice: {e}")
+
     async def start_streaming(self):
-        """Starts real live WebSocket streaming via Upstox MarketDataStreamerV3."""
+        """Starts real live WebSocket streaming & High-Frequency REST polling."""
         self.is_running = True
         logger.info(f"Connecting to Upstox MarketDataStreamerV3 WebSocket for {self.subscribed_keys}...")
         
@@ -402,8 +448,23 @@ class MarketDataEngine:
         except Exception as e:
             logger.error(f"Failed to initialize Upstox MarketDataStreamerV3: {e}")
 
-        # Start background Option Chain refresher (polls every 20 seconds during trading hours)
+        # 1. Start continuous 2.5s high-frequency REST Quote Poller (guarantees non-stop real-time ticks)
+        self._quote_poll_task = asyncio.create_task(self._live_quote_poll_loop())
+
+        # 2. Start background Option Chain refresher (polls every 20 seconds during trading hours)
         self._oi_poll_task = asyncio.create_task(self._live_option_chain_poll_loop())
+
+    async def _live_quote_poll_loop(self):
+        """Polls Upstox REST LTP API every 2.5 seconds to guarantee live data updates."""
+        while self.is_running:
+            try:
+                await self.poll_realtime_quotes()
+                await asyncio.sleep(2.5)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in quote poll loop: {e}")
+                await asyncio.sleep(3.0)
 
     async def _live_option_chain_poll_loop(self):
         """Polls Upstox Option Chain every 20s to refresh live OI and Greeks."""
@@ -419,6 +480,8 @@ class MarketDataEngine:
 
     def stop(self):
         self.is_running = False
+        if self._quote_poll_task:
+            self._quote_poll_task.cancel()
         if self._oi_poll_task:
             self._oi_poll_task.cancel()
         if self.streamer:
