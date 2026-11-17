@@ -100,7 +100,10 @@ class FirebaseBridge:
             return # Skip write to respect 20k daily quota
 
         self.last_sync_time = now
-        state["last_updated_at"] = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+        now_dt = datetime.now(IST)
+        state["last_updated_at"] = now_dt.strftime("%Y-%m-%d %H:%M:%S IST")
+        state["last_updated_time"] = now_dt.strftime("%H:%M:%S IST")
+        state["last_updated_epoch"] = int(time.time() * 1000)
         state["session_id"] = self.session_id
         state["segment"] = self.segment
         self.mock_state = state

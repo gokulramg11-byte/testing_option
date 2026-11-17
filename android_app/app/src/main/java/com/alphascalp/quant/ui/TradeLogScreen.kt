@@ -3,9 +3,11 @@ package com.alphascalp.quant.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -168,9 +170,11 @@ fun TradeLogScreen(
             }
         } else {
             item {
-                // Filter Chips (Segment + Option Type)
+                // Filter Chips (Segment + Option Type) - Horizontally scrollable on small screens
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     FilterChipItem(
@@ -207,6 +211,10 @@ fun TradeLogScreen(
 
             items(filteredTrades) { trade ->
                 TradeCard(trade = trade)
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(48.dp))
             }
         }
     }

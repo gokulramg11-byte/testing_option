@@ -195,8 +195,12 @@ class ScalpBotSystem:
         atm_ce = self.market_data.atm_ce_contract
         atm_pe = self.market_data.atm_pe_contract
 
+        now_dt = datetime.now(IST)
         state_payload = {
             "heartbeat": "ONLINE" if self.is_running else "OFFLINE",
+            "last_updated_at": now_dt.strftime("%Y-%m-%d %H:%M:%S IST"),
+            "last_updated_time": now_dt.strftime("%H:%M:%S IST"),
+            "last_updated_epoch": int(time.time() * 1000),
             "session_id": getattr(self.config, "session_id", "NSE_NIFTY"),
             "segment": getattr(self.config, "segment", "NSE"),
             "symbol": getattr(self.config, "symbol", "NIFTY"),

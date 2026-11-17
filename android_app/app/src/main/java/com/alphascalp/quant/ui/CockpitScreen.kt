@@ -220,7 +220,7 @@ fun CockpitScreen(
             // Emergency Kill Switch Button
             EmergencyKillButton(onEmergencyKill = { showKillConfirm = true })
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(48.dp))
         }
     }
 }
@@ -340,7 +340,7 @@ fun SpotTickerCard(telemetry: TelemetryState) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = if (telemetry.segment == "MCX") "UNDERLYING FUTURE  MCX_FUT" else "UNDERLYING INDEX  NSE_INDEX",
                     color = TextMuted,
@@ -352,7 +352,9 @@ fun SpotTickerCard(telemetry: TelemetryState) {
                     color = TextPrimary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (telemetry.segment == "MCX") {
                     Text(

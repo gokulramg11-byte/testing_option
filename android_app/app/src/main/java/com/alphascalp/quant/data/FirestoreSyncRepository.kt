@@ -250,6 +250,9 @@ class FirestoreSyncRepository(private val context: Context) {
         val mode = getString(fields, "mode", "PAPER")
         val armed = getBoolean(fields, "armed", true)
         val latencyMs = getInt(fields, "latency_ms", 12)
+        val lastUpdatedAt = getString(fields, "last_updated_at", "")
+        val lastUpdatedTime = getString(fields, "last_updated_time", if (lastUpdatedAt.length >= 19) lastUpdatedAt.substring(11, 19) else "")
+        val lastUpdatedEpoch = getLong(fields, "last_updated_epoch", 0L)
         val sessionId = getString(fields, "session_id", fallbackSessionId)
         val segment = getString(fields, "segment", if (sessionId.startsWith("MCX")) "MCX" else "NSE")
         val underlyingName = getString(fields, "underlying_name", if (segment == "MCX") "MCX Commodity" else "Nifty 50")
@@ -351,6 +354,10 @@ class FirestoreSyncRepository(private val context: Context) {
             mode = mode,
             isArmed = armed,
             latencyMs = latencyMs,
+            lastUpdatedAt = lastUpdatedAt,
+            lastUpdatedTime = lastUpdatedTime,
+            lastUpdatedEpoch = lastUpdatedEpoch,
+            clientFetchEpoch = System.currentTimeMillis(),
             sessionId = sessionId,
             segment = segment,
             underlyingName = underlyingName,
@@ -451,6 +458,14 @@ class FirestoreSyncRepository(private val context: Context) {
         if (f.has("integerValue")) return f.optString("integerValue").toIntOrNull() ?: default
         if (f.has("doubleValue")) return f.optDouble("doubleValue", default.toDouble()).toInt()
         if (f.has("stringValue")) return f.optString("stringValue").toIntOrNull() ?: default
+        return default
+    }
+
+    private fun getLong(obj: JSONObject, key: String, default: Long): Long {
+        val f = obj.optJSONObject(key) ?: return default
+        if (f.has("integerValue")) return f.optString("integerValue").toLongOrNull() ?: default
+        if (f.has("doubleValue")) return f.optDouble("doubleValue", default.toDouble()).toLong()
+        if (f.has("stringValue")) return f.optString("stringValue").toLongOrNull() ?: default
         return default
     }
 

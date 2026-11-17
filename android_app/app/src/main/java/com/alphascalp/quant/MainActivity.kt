@@ -8,8 +8,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Dashboard
@@ -37,6 +39,10 @@ import com.alphascalp.quant.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 val AVAILABLE_SESSIONS = listOf(
     TradingSession("NSE_NIFTY", "NIFTY (NSE)", "NSE", "NIFTY", "MARKET"),
@@ -156,6 +162,7 @@ fun MainAppScaffold() {
                             }
                         }
                     )
+                    SyncClockBanner(telemetry = telemetry)
                 }
             },
             bottomBar = {
@@ -333,13 +340,23 @@ fun SentinelRulesScreen(
     telemetry: TelemetryState,
     onOpenModal: () -> Unit
 ) {
+    val readiness = telemetry.readinessPct.coerceIn(0, 100)
+    val passing = telemetry.passingCount.coerceIn(0, 7)
+    val readinessColor = when {
+        readiness >= 85 -> EmeraldBright
+        readiness >= 50 -> Amber
+        else -> Cyan
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Canvas)
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Title Bar with Rules Button
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -349,12 +366,12 @@ fun SentinelRulesScreen(
                 Text(
                     text = "SENTINEL GATEKEEPER MATRIX",
                     color = TextPrimary,
-                    fontSize = 16.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
-                    text = "7-Point Execution Pre-conditions (Closed Candles)",
+                    text = "7-Point Quantitative Verification (${telemetry.symbol} // ${telemetry.segment})",
                     color = TextMuted,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
@@ -363,8 +380,8 @@ fun SentinelRulesScreen(
             Button(
                 onClick = onOpenModal,
                 colors = ButtonDefaults.buttonColors(containerColor = SurfaceLow),
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.border(1.dp, BorderAccent, MaterialTheme.shapes.small)
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.border(1.dp, BorderAccent, RoundedCornerShape(6.dp))
             ) {
                 Text(
                     text = "RULES",
@@ -376,56 +393,320 @@ fun SentinelRulesScreen(
             }
         }
 
-        telemetry.gates.forEach { gate ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = SurfaceLow),
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, BorderSubtle, MaterialTheme.shapes.small)
+        // Overall Readiness Summary Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0x3306B6D4), RoundedCornerShape(8.dp)),
+            colors = CardDefaults.cardColors(containerColor = SurfaceLow),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column {
                         Text(
-                            text = gate.name,
-                            color = TextPrimary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
+                            text = "CONVERGENCE READINESS",
+                            color = Cyan,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = gate.value,
-                            color = TextMuted,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
+                            text = "$readiness% READINESS",
+                            color = readinessColor,
+                            fontSize = 18.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
                         )
                     }
+
                     Box(
                         modifier = Modifier
-                            .background(if (gate.isPass) EmeraldDark else Surface, MaterialTheme.shapes.small)
-                            .border(1.dp, if (gate.isPass) Emerald else BorderSubtle, MaterialTheme.shapes.small)
+                            .background(
+                                if (passing >= 7) Color(0x3310B981) else Color(0x1AF59E0B),
+                                RoundedCornerShape(6.dp)
+                            )
+                            .border(
+                                1.dp,
+                                if (passing >= 7) Emerald else Color(0x4DF59E0B),
+                                RoundedCornerShape(6.dp)
+                            )
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = if (gate.isPass) "PASS" else gate.label,
-                            color = if (gate.isPass) EmeraldBright else TextDim,
+                            text = "$passing / 7 QUALIFIED",
+                            color = if (passing >= 7) EmeraldBright else Amber,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                     }
                 }
+
+                // Progress Bar
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(Surface)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(readiness / 100f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(readinessColor)
+                    )
+                }
+
+                // Bias & Signal
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "MARKET BIAS: ${telemetry.marketBias.ifBlank { "NEUTRAL" }}",
+                        color = if (telemetry.marketBias.contains("BULL")) EmeraldBright else if (telemetry.marketBias.contains("BEAR")) CrimsonBright else TextMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "SIGNAL: ${telemetry.signalStatus.ifBlank { "STANDBY" }}",
+                        color = if (telemetry.signalStatus.contains("BUY")) EmeraldBright else Cyan,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        // 7 Gate Cards
+        telemetry.gates.forEach { gate ->
+            val prox = gate.proximityPct.coerceIn(0, 100)
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceLow),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        1.dp,
+                        if (gate.isPass) Color(0x4D10B981) else BorderSubtle,
+                        RoundedCornerShape(8.dp)
+                    )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = gate.name,
+                            color = TextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    if (gate.isPass) Color(0x3310B981) else Color(0x1AF59E0B),
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (gate.isPass) Emerald else Color(0x4DF59E0B),
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = if (gate.isPass) "PASS" else "$prox%",
+                                color = if (gate.isPass) EmeraldBright else Amber,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+
+                    // Progress Track
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Surface)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(if (gate.isPass) 1.0f else (prox / 100f))
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(if (gate.isPass) Emerald else Amber)
+                        )
+                    }
+
+                    Text(
+                        text = gate.value,
+                        color = if (gate.isPass) EmeraldBright else TextMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 14.sp
+                    )
+
+                    if (gate.proximityText.isNotBlank()) {
+                        Text(
+                            text = "↳ ${gate.proximityText}",
+                            color = Cyan,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+        }
+
+        // Generous bottom spacer so Sentinel list is completely visible above bottom nav bar
+        Spacer(modifier = Modifier.height(48.dp))
+    }
+}
+
+@Composable
+fun SyncClockBanner(
+    telemetry: TelemetryState,
+    modifier: Modifier = Modifier
+) {
+    var currentIstTime by remember { mutableStateOf("") }
+    var elapsedSeconds by remember { mutableStateOf<Long?>(null) }
+
+    LaunchedEffect(telemetry) {
+        val sdf = SimpleDateFormat("HH:mm:ss 'IST'", Locale.getDefault()).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        }
+        while (isActive) {
+            val now = System.currentTimeMillis()
+            currentIstTime = sdf.format(Date(now))
+            val refEpoch = if (telemetry.lastUpdatedEpoch > 0) telemetry.lastUpdatedEpoch else telemetry.clientFetchEpoch
+            if (refEpoch > 0) {
+                elapsedSeconds = maxOf(0L, (now - refEpoch) / 1000)
+            }
+            delay(1000)
+        }
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulseLive")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseLiveAlpha"
+    )
+
+    Surface(
+        color = SurfaceLowest,
+        modifier = modifier
+            .fillMaxWidth()
+            .border(width = 1.dp, color = BorderSubtle)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Left: Current IST Time
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "🕐 NOW:",
+                    color = TextDim,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = currentIstTime.ifBlank { "--:--:-- IST" },
+                    color = TextPrimary,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Right: Last Sync & Live Elapsed Badge
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val syncDisplay = if (telemetry.lastUpdatedTime.isNotBlank()) {
+                    telemetry.lastUpdatedTime
+                } else if (telemetry.lastUpdatedAt.isNotBlank()) {
+                    if (telemetry.lastUpdatedAt.length >= 19) telemetry.lastUpdatedAt.substring(11) else telemetry.lastUpdatedAt
+                } else {
+                    "--"
+                }
+
+                Text(
+                    text = "SYNC: $syncDisplay",
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+
+                val elapsed = elapsedSeconds ?: 0L
+                val isOnline = telemetry.heartbeat == "ONLINE"
+                val (pillBg, pillBorder, pillText, pillColor) = when {
+                    !isOnline -> Tuple4(SurfaceLow, BorderSubtle, "STANDBY", TextDim)
+                    elapsed <= 5 -> Tuple4(EmeraldDark, Emerald, "● LIVE ${elapsed}s ago", EmeraldBright)
+                    elapsed <= 15 -> Tuple4(Surface, Cyan, "● ${elapsed}s ago", Cyan)
+                    else -> Tuple4(Surface, Amber, "▲ ${elapsed}s ago", Amber)
+                }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(pillBg)
+                        .border(1.dp, pillBorder, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = pillText,
+                        color = pillColor.copy(alpha = if (isOnline && elapsed <= 5) pulseAlpha else 1.0f),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
     }
 }
+
+private data class Tuple4<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 @Composable
 fun MarketSessionTabs(
