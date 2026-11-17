@@ -58,6 +58,7 @@ jobs:
       - name: Run Algorithmic Scalper Session
         env:
           PYTHONUNBUFFERED: "1"
+          SESSION_ID: "NSE_NIFTY"
           # Critical Security: Injected via GitHub Encrypted Secrets
           UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
           UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}

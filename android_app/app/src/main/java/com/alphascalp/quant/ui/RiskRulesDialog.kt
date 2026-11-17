@@ -25,6 +25,8 @@ import com.alphascalp.quant.ui.theme.*
 @Composable
 fun RiskRulesDialog(
     onDismissRequest: () -> Unit,
+    projectId: String = "",
+    onSwitchProject: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Dialog(onDismissRequest = onDismissRequest) {
@@ -112,6 +114,40 @@ fun RiskRulesDialog(
                 RuleRow(label = "Lunch Blackout", value = "12:00 - 13:30 IST (No Orders)", color = TextDim)
 
                 Spacer(modifier = Modifier.height(6.dp))
+
+                HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
+
+                // Project Configuration & Switch
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    RiskSectionHeader(title = "CONNECTED FIREBASE PROJECT")
+                    Text(
+                        text = if (projectId.isNotBlank()) "Project ID: $projectId" else "Project ID: Not Configured",
+                        color = TextPrimary,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    OutlinedButton(
+                        onClick = {
+                            onDismissRequest()
+                            onSwitchProject()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(6.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, BorderSubtle)
+                    ) {
+                        Text(
+                            text = "CHANGE FIREBASE PROJECT / RE-LOGIN",
+                            color = Amber,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = BorderSubtle, thickness = 1.dp)
 
                 Button(
                     onClick = onDismissRequest,

@@ -68,6 +68,7 @@ fun MainAppScaffold() {
     var showRulesDialog by remember { mutableStateOf(false) }
 
     // Session selection (time-aware: 9:00-15:30 -> NSE_NIFTY, else -> MCX_CRUDEOIL)
+    var userManuallySelectedSession by remember { mutableStateOf(false) }
     var selectedSessionId by remember {
         val istHour = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Kolkata")).get(java.util.Calendar.HOUR_OF_DAY)
         val defaultId = if (istHour in 9..15) "NSE_NIFTY" else "MCX_CRUDEOIL"
@@ -104,6 +105,15 @@ fun MainAppScaffold() {
                             }
                         }
                     }
+
+                    // 4. Smart Auto-Switch: If current view is in STANDBY but another session is ONLINE,
+                    // auto-switch immediately to show the active live market session (unless user explicitly selected)!
+                    if (!userManuallySelectedSession && telemetry.heartbeat == "STANDBY") {
+                        val onlineSession = AVAILABLE_SESSIONS.firstOrNull { sessionHeartbeats[it.id] == "ONLINE" }
+                        if (onlineSession != null && onlineSession.id != selectedSessionId) {
+                            selectedSessionId = onlineSession.id
+                        }
+                    }
                 } catch (e: Exception) {
                     // Network or connection pause; maintain current state
                 }
@@ -138,6 +148,7 @@ fun MainAppScaffold() {
                         selectedSessionId = selectedSessionId,
                         sessionHeartbeats = sessionHeartbeats,
                         onSelectSession = { newId ->
+                            userManuallySelectedSession = true
                             selectedSessionId = newId
                             coroutineScope.launch {
                                 val s = repository.fetchLiveState(projectId, newId)
@@ -191,7 +202,11 @@ fun MainAppScaffold() {
                 }
 
                 if (showRulesDialog) {
-                    RiskRulesDialog(onDismissRequest = { showRulesDialog = false })
+                    RiskRulesDialog(
+                        onDismissRequest = { showRulesDialog = false },
+                        projectId = projectId,
+                        onSwitchProject = { isAuthenticated = false }
+                    )
                 }
             }
         }
