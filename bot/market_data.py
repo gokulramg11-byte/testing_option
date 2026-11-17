@@ -32,13 +32,7 @@ class MarketDataEngine:
         self.timeframe_str = f"{self.timeframe_minutes}min"
         self.underlying_name = getattr(config, "underlying_name", getattr(config, "index_name", "NIFTY"))
         
-        # MCX Resolver
-        self.mcx_resolver = MCXInstrumentResolver() if self.segment == "MCX" else None
-        self.active_future_contract: Optional[Dict[str, Any]] = None
-
         self.spot_instrument = config.spot_instrument_key
-        if self.segment == "MCX" and self.mcx_resolver:
-            self.resolve_underlying()
         
         # Real-time data caches
         self.spot_ltp: float = 0.0
@@ -47,7 +41,7 @@ class MarketDataEngine:
         self.spot_change_pct: float = 0.0
         self.candles_3m: pd.DataFrame = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
         
-        # Current subscribed instruments
+        # Current subscribed instruments (guaranteed initialized before resolver)
         self.subscribed_keys: List[str] = [self.spot_instrument]
         self.current_expiry_date: Optional[str] = None
         self.atm_ce_contract: Optional[Dict[str, Any]] = None
@@ -66,6 +60,13 @@ class MarketDataEngine:
         self._oi_poll_task: Optional[asyncio.Task] = None
         self._quote_poll_task: Optional[asyncio.Task] = None
 
+        # MCX Resolver
+        self.mcx_resolver = MCXInstrumentResolver() if self.segment == "MCX" else None
+        self.active_future_contract: Optional[Dict[str, Any]] = None
+
+        if self.segment == "MCX" and self.mcx_resolver:
+            self.resolve_underlying()
+
     def resolve_underlying(self):
         """Resolves the underlying instrument: Index for NSE or Near-Month Future for MCX."""
         if self.segment == "MCX" and self.mcx_resolver:
@@ -74,8 +75,13 @@ class MarketDataEngine:
                 self.active_future_contract = future
                 self.spot_instrument = future.get("instrument_key", self.spot_instrument)
                 self.config.spot_instrument_key = self.spot_instrument
-                if self.spot_instrument not in self.subscribed_keys:
-                    self.subscribed_keys[0] = self.spot_instrument
+                if not hasattr(self, "subscribed_keys"):
+                    self.subscribed_keys = [self.spot_instrument]
+                elif self.spot_instrument not in self.subscribed_keys:
+                    if self.subscribed_keys:
+                        self.subscribed_keys[0] = self.spot_instrument
+                    else:
+                        self.subscribed_keys.append(self.spot_instrument)
                 logger.info(f"MCX Underlying Future resolved: {future.get('trading_symbol')} ({self.spot_instrument})")
 
     async def warm_up_historical_data(self):
