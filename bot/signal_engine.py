@@ -14,22 +14,40 @@ class SignalGatekeeper:
         self.config = config
 
     def is_in_active_window(self, dt: datetime) -> Tuple[bool, str]:
-        """Check if current IST time is in 09:30-12:00 or 13:30-15:10."""
+        """Checks if current IST time is inside configured active trading windows and not in EIA blackout."""
+        from datetime import time as dt_time
         t = dt.time()
-        in_morn = (self.config.morning_window[0] <= t <= self.config.morning_window[1])
-        in_aft = (self.config.afternoon_window[0] <= t <= self.config.afternoon_window[1])
-        
         time_str = dt.strftime("%H:%M IST")
-        if in_morn:
-            return True, f"{time_str} (Active Session 09:30-12:00)"
-        elif in_aft:
-            return True, f"{time_str} (Active Session 13:30-15:10)"
-        elif t < self.config.morning_window[0]:
-            return False, f"{time_str} (Pre-Market / Opening Chop 09:15-09:30)"
-        elif self.config.morning_window[1] < t < self.config.afternoon_window[0]:
-            return False, f"{time_str} (Midday Chop 12:00-13:30)"
-        else:
-            return False, f"{time_str} (Post-Market / Closed)"
+
+        # 1. Check EIA News Blackout Guard (Wednesdays for Crude Oil, Thursdays for Natural Gas)
+        if self.config.eia_blackout_day is not None and dt.weekday() == self.config.eia_blackout_day:
+            if dt_time(19, 50) <= t <= dt_time(20, 10):
+                news_name = "EIA Crude Oil Inventory" if self.config.symbol == "CRUDEOIL" else "EIA Natural Gas Storage"
+                return False, f"{time_str} (US {news_name} Blackout 19:50-20:10 IST)"
+
+        # 2. Check Active Trading Windows
+        is_active = False
+        window_desc = ""
+        for start_w, end_w in self.config.active_windows:
+            if start_w <= t <= end_w:
+                is_active = True
+                window_desc = f"{start_w.strftime('%H:%M')}-{end_w.strftime('%H:%M')} IST"
+                break
+
+        if is_active:
+            return True, f"{time_str} (Active Session {window_desc})"
+
+        # If before first window
+        if self.config.active_windows:
+            first_start = self.config.active_windows[0][0]
+            if t < first_start:
+                return False, f"{time_str} (Pre-Session / Awaiting {first_start.strftime('%H:%M')} IST)"
+
+            last_end = self.config.active_windows[-1][1]
+            if t > last_end:
+                return False, f"{time_str} (Session Closed at {last_end.strftime('%H:%M')} IST)"
+
+        return False, f"{time_str} (Mid-Session Pause / Break)"
 
     def evaluate_gates(
         self,

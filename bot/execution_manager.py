@@ -56,12 +56,15 @@ class ExecutionManager:
             order_id = self._place_upstox_order(
                 instrument_key=contract["instrument_key"],
                 quantity=total_qty,
-                transaction_type="BUY"
+                transaction_type="BUY",
+                ltp=entry_price
             ) or order_id
 
         self.active_position = {
             "order_id": order_id,
-            "strike": contract.get("tradingsymbol", "NIFTY ATM OPTION"),
+            "session_id": self.config.session_id,
+            "segment": self.config.segment,
+            "strike": contract.get("tradingsymbol", f"{self.config.symbol} ATM OPTION"),
             "instrument_key": contract.get("instrument_key", ""),
             "option_type": "CE" if "CE" in signal else "PE",
             "entry_price": entry_price,
@@ -166,11 +169,14 @@ class ExecutionManager:
             self._place_upstox_order(
                 instrument_key=pos["instrument_key"],
                 quantity=pos["current_qty"],
-                transaction_type="SELL"
+                transaction_type="SELL",
+                ltp=exit_price
             )
 
         completed_trade = {
             "id": f"TR_{len(self.trade_history) + 1:02d}",
+            "session_id": self.config.session_id,
+            "segment": self.config.segment,
             "strike": pos["strike"],
             "option_type": pos["option_type"],
             "entry_time": pos["entry_time"],
@@ -200,22 +206,29 @@ class ExecutionManager:
         else:
             logger.info("Emergency Square-Off invoked but no open position found.")
 
-    def _place_upstox_order(self, instrument_key: str, quantity: int, transaction_type: str) -> Optional[str]:
-        """Places live market order via Upstox API v2."""
+    def _place_upstox_order(self, instrument_key: str, quantity: int, transaction_type: str, ltp: float = 0.0) -> Optional[str]:
+        """Places live market or buffered limit order via Upstox API v2."""
         url = "https://api.upstox.com/v2/order/place"
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.access_token}"
         }
+
+        is_limit = self.config.order_type == "LIMIT"
+        limit_price = 0.0
+        if is_limit and ltp > 0:
+            buffer = 2 * self.config.tick_size
+            limit_price = round(ltp + buffer, 2) if transaction_type == "BUY" else round(ltp - buffer, 2)
+
         payload = {
             "quantity": quantity,
             "product": "I",              # Intraday MIS
             "validity": "DAY",
-            "price": 0.0,
+            "price": limit_price if is_limit else 0.0,
             "tag": "ALPHASCALP_BOT",
             "instrument_token": instrument_key,
-            "order_type": "MARKET",
+            "order_type": "LIMIT" if is_limit else "MARKET",
             "transaction_type": transaction_type,
             "disclosed_quantity": 0,
             "trigger_price": 0.0,
@@ -225,7 +238,7 @@ class ExecutionManager:
             res = requests.post(url, json=payload, headers=headers, timeout=5)
             if res.status_code == 200:
                 order_id = res.json().get("data", {}).get("order_id")
-                logger.info(f"Live Upstox order placed: ID {order_id}")
+                logger.info(f"Live Upstox ({payload['order_type']} @ ₹{limit_price}) order placed: ID {order_id}")
                 return order_id
             else:
                 logger.error(f"Live Upstox order placement failed: {res.text}")

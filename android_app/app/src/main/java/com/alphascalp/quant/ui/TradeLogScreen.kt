@@ -34,6 +34,8 @@ fun TradeLogScreen(
 
     val filteredTrades = remember(selectedFilter, trades) {
         when (selectedFilter) {
+            "NSE" -> trades.filter { it.segment == "NSE" }
+            "MCX" -> trades.filter { it.segment == "MCX" }
             "CE" -> trades.filter { it.optionType == "CE" }
             "PE" -> trades.filter { it.optionType == "PE" }
             else -> trades
@@ -166,10 +168,10 @@ fun TradeLogScreen(
             }
         } else {
             item {
-                // Filter Chips
+                // Filter Chips (Segment + Option Type)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     FilterChipItem(
                         label = "ALL (${trades.size})",
@@ -177,13 +179,25 @@ fun TradeLogScreen(
                         onClick = { selectedFilter = "ALL" }
                     )
                     FilterChipItem(
-                        label = "CE LONGS (${trades.count { it.optionType == "CE" }})",
+                        label = "NSE (${trades.count { it.segment == "NSE" }})",
+                        isSelected = selectedFilter == "NSE",
+                        accentColor = Cyan,
+                        onClick = { selectedFilter = "NSE" }
+                    )
+                    FilterChipItem(
+                        label = "MCX (${trades.count { it.segment == "MCX" }})",
+                        isSelected = selectedFilter == "MCX",
+                        accentColor = Amber,
+                        onClick = { selectedFilter = "MCX" }
+                    )
+                    FilterChipItem(
+                        label = "CE (${trades.count { it.optionType == "CE" }})",
                         isSelected = selectedFilter == "CE",
                         accentColor = Emerald,
                         onClick = { selectedFilter = "CE" }
                     )
                     FilterChipItem(
-                        label = "PE SHORTS (${trades.count { it.optionType == "PE" }})",
+                        label = "PE (${trades.count { it.optionType == "PE" }})",
                         isSelected = selectedFilter == "PE",
                         accentColor = Crimson,
                         onClick = { selectedFilter = "PE" }
@@ -277,6 +291,22 @@ fun TradeCard(trade: TradeRecord) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (trade.segment == "MCX") AmberDark else Surface)
+                            .border(1.dp, if (trade.segment == "MCX") Amber else BorderSubtle, RoundedCornerShape(4.dp))
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = trade.segment,
+                            color = if (trade.segment == "MCX") Amber else Cyan,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))

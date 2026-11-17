@@ -33,7 +33,8 @@ fun CockpitScreen(
     telemetry: TelemetryState,
     onOpenRules: () -> Unit,
     onEmergencyKill: () -> Unit,
-    onToggleArm: (Boolean) -> Unit = {}
+    onToggleArm: (Boolean) -> Unit = {},
+    combinedDayPnl: Double = 0.0
 ) {
     var isArmed by remember(telemetry.isArmed) { mutableStateOf(telemetry.isArmed) }
     var showKillConfirm by remember { mutableStateOf(false) }
@@ -209,7 +210,7 @@ fun CockpitScreen(
             SignalGatekeeperCard(telemetry)
 
             // Net Realized MTM & Risk Card
-            NetMtmCard(telemetry)
+            NetMtmCard(telemetry, combinedDayPnl)
 
             // Active Trade Card (if in position)
             if (telemetry.activePosition != null) {
@@ -341,18 +342,27 @@ fun SpotTickerCard(telemetry: TelemetryState) {
         ) {
             Column {
                 Text(
-                    text = "UNDERLYING INDEX  NSE_INDEX",
+                    text = if (telemetry.segment == "MCX") "UNDERLYING FUTURE  MCX_FUT" else "UNDERLYING INDEX  NSE_INDEX",
                     color = TextMuted,
                     fontSize = 9.sp,
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
-                    text = telemetry.indexName,
+                    text = telemetry.underlyingName.ifBlank { telemetry.indexName },
                     color = TextPrimary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace
                 )
+                if (telemetry.segment == "MCX") {
+                    Text(
+                        text = "🛡️ LIMIT ORDER (2-Tick Spread Guard)",
+                        color = Cyan,
+                        fontSize = 8.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(
@@ -373,7 +383,7 @@ fun SpotTickerCard(telemetry: TelemetryState) {
                     )
                 } else {
                     Text(
-                        text = "Awaiting Upstox Tick",
+                        text = "Awaiting ${if (telemetry.segment == "MCX") "MCX Future" else "Upstox"} Tick",
                         color = TextDim,
                         fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace
@@ -750,9 +760,11 @@ fun GateItem(gate: GateCheck) {
 }
 
 @Composable
-fun NetMtmCard(telemetry: TelemetryState) {
+fun NetMtmCard(telemetry: TelemetryState, combinedDayPnl: Double = 0.0) {
     val isPnlPositive = telemetry.netDailyMtm > 0
     val isPnlNegative = telemetry.netDailyMtm < 0
+    val isCombinedPositive = combinedDayPnl > 0
+    val isCombinedNegative = combinedDayPnl < 0
 
     Card(
         modifier = Modifier
@@ -768,7 +780,7 @@ fun NetMtmCard(telemetry: TelemetryState) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "NET INTRADAY REALIZED MTM",
+                    text = "SESSION MTM // ${telemetry.sessionId}",
                     color = TextMuted,
                     fontSize = 9.sp,
                     fontFamily = FontFamily.Monospace
@@ -797,13 +809,36 @@ fun NetMtmCard(telemetry: TelemetryState) {
             }
 
             Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "${if (telemetry.netDailyMtm >= 0) "+" else ""}₹${String.format("%,.2f", telemetry.netDailyMtm)}",
-                color = if (isPnlPositive) EmeraldBright else if (isPnlNegative) CrimsonBright else TextPrimary,
-                fontSize = 22.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Text(
+                    text = "${if (telemetry.netDailyMtm >= 0) "+" else ""}₹${String.format("%,.2f", telemetry.netDailyMtm)}",
+                    color = if (isPnlPositive) EmeraldBright else if (isPnlNegative) CrimsonBright else TextPrimary,
+                    fontSize = 22.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+
+                // All-Day Combined P&L Badge (NSE + MCX)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "COMBINED DAY P&L",
+                        color = TextDim,
+                        fontSize = 8.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "${if (combinedDayPnl >= 0) "+" else ""}₹${String.format("%,.2f", combinedDayPnl)}",
+                        color = if (isCombinedPositive) EmeraldBright else if (isCombinedNegative) CrimsonBright else TextMuted,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
             HorizontalDivider(color = Color(0x33374151))

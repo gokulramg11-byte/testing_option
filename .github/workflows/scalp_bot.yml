@@ -53,7 +53,7 @@ jobs:
       - name: Install Bot Dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r bot/requirements.txt
+          pip install --no-build-isolation -r bot/requirements.txt || pip install -r bot/requirements.txt
 
       - name: Run Algorithmic Scalper Session
         env:

@@ -32,42 +32,56 @@ class FirestoreSyncRepository(private val context: Context) {
 
     /**
      * Fetches live telemetry document directly from Firestore REST API:
-     * GET https://firestore.googleapis.com/v1/projects/{projectId}/databases/(default)/documents/live_state/current
+     * Tries 'sessions/{sessionId}' first, falls back to 'live_state/current' for legacy single-session.
      */
-    suspend fun fetchLiveState(projectId: String): TelemetryState? = withContext(Dispatchers.IO) {
+    suspend fun fetchLiveState(projectId: String, sessionId: String = "NSE_NIFTY"): TelemetryState? = withContext(Dispatchers.IO) {
         try {
-            val urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/live_state/current"
-            val url = URL(urlString)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
-            conn.setRequestProperty("Accept", "application/json")
+            var urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/sessions/$sessionId"
+            var conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 5000
+                readTimeout = 5000
+                setRequestProperty("Accept", "application/json")
+            }
 
-            val responseCode = conn.responseCode
+            var responseCode = conn.responseCode
+            // Fallback to legacy path if session document not found yet on NSE
+            if (responseCode == 404 && sessionId == "NSE_NIFTY") {
+                urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/live_state/current"
+                conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                    setRequestProperty("Accept", "application/json")
+                }
+                responseCode = conn.responseCode
+            }
+
             if (responseCode == 200) {
                 val reader = BufferedReader(InputStreamReader(conn.inputStream))
                 val response = reader.readText()
                 reader.close()
-                return@withContext parseFirestoreTelemetry(response)
+                return@withContext parseFirestoreTelemetry(response, sessionId)
             } else {
-                Log.w(TAG, "Firestore live_state fetch HTTP $responseCode")
+                Log.w(TAG, "Firestore sessions/$sessionId fetch HTTP $responseCode")
                 val (status, detail) = when (responseCode) {
                     403 -> Pair("RULES 403", "Firestore Rules block read. In Firebase Console > Firestore Database > Rules, set: allow read, write: if true;")
-                    404 -> Pair("PROJECT 404", "Project '$projectId' not found or 'live_state/current' not written yet. Check Project ID.")
+                    404 -> Pair("STANDBY", "Session '$sessionId' awaiting cloud bot execution.")
                     else -> Pair("HTTP $responseCode", "Server returned HTTP $responseCode for project '$projectId'.")
                 }
                 return@withContext TelemetryState(
                     heartbeat = status,
+                    sessionId = sessionId,
                     gates = listOf(
-                        GateCheck(1, "Cloud Bridge Diagnostics", false, status, detail)
+                        GateCheck(1, "Session Status", false, status, detail)
                     )
                 )
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error fetching live state from Firestore: ${e.message}")
+            Log.e(TAG, "Error fetching live state for $sessionId: ${e.message}")
             return@withContext TelemetryState(
                 heartbeat = "CONN ERR",
+                sessionId = sessionId,
                 gates = listOf(
                     GateCheck(1, "Network Status", false, "ERROR", e.localizedMessage ?: "Cannot connect to Firestore")
                 )
@@ -77,28 +91,43 @@ class FirestoreSyncRepository(private val context: Context) {
 
     /**
      * Fetches real trade history documents directly from Firestore REST API:
-     * GET https://firestore.googleapis.com/v1/projects/{projectId}/databases/(default)/documents/trade_history
+     * Queries 'trades' root collection first, then falls back to 'trade_history'.
      */
     suspend fun fetchTradeHistory(projectId: String): List<TradeRecord> = withContext(Dispatchers.IO) {
         try {
-            val urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/trade_history"
-            val url = URL(urlString)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
-            conn.setRequestProperty("Accept", "application/json")
+            var urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/trades"
+            var conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 5000
+                readTimeout = 5000
+                setRequestProperty("Accept", "application/json")
+            }
 
-            val responseCode = conn.responseCode
+            var responseCode = conn.responseCode
+            if (responseCode == 200) {
+                val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                val response = reader.readText()
+                reader.close()
+                val parsed = parseFirestoreTrades(response)
+                if (parsed.isNotEmpty()) return@withContext parsed
+            }
+
+            // Fallback to trade_history collection
+            urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/trade_history"
+            conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 5000
+                readTimeout = 5000
+                setRequestProperty("Accept", "application/json")
+            }
+            responseCode = conn.responseCode
             if (responseCode == 200) {
                 val reader = BufferedReader(InputStreamReader(conn.inputStream))
                 val response = reader.readText()
                 reader.close()
                 return@withContext parseFirestoreTrades(response)
-            } else {
-                Log.w(TAG, "Firestore trade_history fetch HTTP $responseCode")
-                return@withContext emptyList()
             }
+            return@withContext emptyList()
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching trade history from Firestore: ${e.message}")
             return@withContext emptyList()
@@ -106,19 +135,18 @@ class FirestoreSyncRepository(private val context: Context) {
     }
 
     /**
-     * Sends Kill Switch or Arm command to Firestore 'control/settings':
-     * PATCH https://firestore.googleapis.com/v1/projects/{projectId}/databases/(default)/documents/control/settings?updateMask.fieldPaths=kill_switch&updateMask.fieldPaths=armed
+     * Sends Kill Switch command to Firestore 'controls/{sessionId}' (and 'control/settings'):
      */
-    suspend fun sendEmergencyKillSwitch(projectId: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun sendEmergencyKillSwitch(projectId: String, sessionId: String = "NSE_NIFTY"): Boolean = withContext(Dispatchers.IO) {
         try {
-            val urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/control/settings?updateMask.fieldPaths=kill_switch&updateMask.fieldPaths=armed"
-            val url = URL(urlString)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "PATCH"
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json")
+            val urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/controls/$sessionId?updateMask.fieldPaths=kill_switch&updateMask.fieldPaths=armed"
+            val conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                requestMethod = "PATCH"
+                connectTimeout = 5000
+                readTimeout = 5000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
 
             val body = JSONObject().apply {
                 val fields = JSONObject().apply {
@@ -134,24 +162,46 @@ class FirestoreSyncRepository(private val context: Context) {
             writer.close()
 
             val responseCode = conn.responseCode
-            Log.i(TAG, "Kill Switch command sent. Firestore HTTP $responseCode")
+            Log.i(TAG, "Kill Switch command sent for $sessionId. HTTP $responseCode")
+
+            // Backwards compatibility mirror for legacy NSE
+            if (sessionId == "NSE_NIFTY") {
+                try {
+                    val legacyUrl = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/control/settings?updateMask.fieldPaths=kill_switch&updateMask.fieldPaths=armed"
+                    val legConn = (URL(legacyUrl).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "PATCH"
+                        connectTimeout = 3000
+                        readTimeout = 3000
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json")
+                    }
+                    val legWriter = OutputStreamWriter(legConn.outputStream)
+                    legWriter.write(body.toString())
+                    legWriter.flush()
+                    legWriter.close()
+                    legConn.responseCode
+                } catch (e: Exception) {
+                    // Ignore legacy mirror error
+                }
+            }
+
             return@withContext responseCode in 200..299
         } catch (e: Exception) {
-            Log.e(TAG, "Error triggering Kill Switch on Firestore: ${e.message}")
+            Log.e(TAG, "Error triggering Kill Switch for $sessionId: ${e.message}")
             return@withContext false
         }
     }
 
-    suspend fun toggleArming(projectId: String, isArmed: Boolean): Boolean = withContext(Dispatchers.IO) {
+    suspend fun toggleArming(projectId: String, sessionId: String = "NSE_NIFTY", isArmed: Boolean): Boolean = withContext(Dispatchers.IO) {
         try {
-            val urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/control/settings?updateMask.fieldPaths=armed"
-            val url = URL(urlString)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "PATCH"
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/json")
+            val urlString = "https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/controls/$sessionId?updateMask.fieldPaths=armed"
+            val conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                requestMethod = "PATCH"
+                connectTimeout = 5000
+                readTimeout = 5000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
 
             val body = JSONObject().apply {
                 val fields = JSONObject().apply {
@@ -168,20 +218,26 @@ class FirestoreSyncRepository(private val context: Context) {
             val responseCode = conn.responseCode
             return@withContext responseCode in 200..299
         } catch (e: Exception) {
-            Log.e(TAG, "Error toggling arming state: ${e.message}")
+            Log.e(TAG, "Error toggling arming state for $sessionId: ${e.message}")
             return@withContext false
         }
     }
 
-    private fun parseFirestoreTelemetry(jsonString: String): TelemetryState {
+    private fun parseFirestoreTelemetry(jsonString: String, fallbackSessionId: String = "NSE_NIFTY"): TelemetryState {
         val root = JSONObject(jsonString)
-        val fields = root.optJSONObject("fields") ?: return TelemetryState(heartbeat = "STANDBY")
+        val fields = root.optJSONObject("fields") ?: return TelemetryState(heartbeat = "STANDBY", sessionId = fallbackSessionId)
 
         val heartbeat = getString(fields, "heartbeat", "ONLINE")
         val mode = getString(fields, "mode", "PAPER")
         val armed = getBoolean(fields, "armed", true)
         val latencyMs = getInt(fields, "latency_ms", 12)
-        val indexName = getString(fields, "index_name", "NIFTY")
+        val sessionId = getString(fields, "session_id", fallbackSessionId)
+        val segment = getString(fields, "segment", if (sessionId.startsWith("MCX")) "MCX" else "NSE")
+        val underlyingName = getString(fields, "underlying_name", if (segment == "MCX") "MCX Commodity" else "Nifty 50")
+        val symbol = getString(fields, "symbol", if (segment == "MCX") "CRUDEOIL" else "NIFTY")
+        val orderType = getString(fields, "order_type", if (segment == "MCX") "LIMIT" else "MARKET")
+        val lotSize = getInt(fields, "lot_size", if (segment == "MCX") 100 else 75)
+        val indexName = getString(fields, "index_name", underlyingName)
         val spotLtp = getDouble(fields, "spot_ltp", 0.0)
         val spotChange = getDouble(fields, "spot_change", 0.0)
         val spotChangePct = getDouble(fields, "spot_change_pct", 0.0)
@@ -276,6 +332,12 @@ class FirestoreSyncRepository(private val context: Context) {
             mode = mode,
             isArmed = armed,
             latencyMs = latencyMs,
+            sessionId = sessionId,
+            segment = segment,
+            underlyingName = underlyingName,
+            symbol = symbol,
+            orderType = orderType,
+            lotSize = lotSize,
             indexName = indexName,
             spotLtp = spotLtp,
             spotChange = spotChange,
@@ -304,6 +366,8 @@ class FirestoreSyncRepository(private val context: Context) {
         for (i in 0 until documents.length()) {
             val doc = documents.optJSONObject(i) ?: continue
             val fields = doc.optJSONObject("fields") ?: continue
+            val sesId = getString(fields, "session_id", "NSE_NIFTY")
+            val seg = getString(fields, "segment", if (sesId.startsWith("MCX")) "MCX" else "NSE")
             trades.add(
                 TradeRecord(
                     id = getString(fields, "id", "TR-${i + 1}"),
@@ -316,7 +380,9 @@ class FirestoreSyncRepository(private val context: Context) {
                     exitTime = getString(fields, "exit_time", "--"),
                     points = getDouble(fields, "points", 0.0),
                     pnl = getDouble(fields, "pnl", 0.0),
-                    exitReason = getString(fields, "exit_reason", "EXIT")
+                    exitReason = getString(fields, "exit_reason", "EXIT"),
+                    sessionId = sesId,
+                    segment = seg
                 )
             )
         }

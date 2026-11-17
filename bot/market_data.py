@@ -19,6 +19,7 @@ import pytz
 import upstox_client
 from upstox_client.feeder.market_data_streamer_v3 import MarketDataStreamerV3
 from bot.config import TradingConfig, IST
+from bot.instrument_resolver import MCXInstrumentResolver
 
 logger = logging.getLogger("MarketDataEngine")
 
@@ -26,7 +27,18 @@ class MarketDataEngine:
     def __init__(self, config: TradingConfig, access_token: str):
         self.config = config
         self.access_token = access_token
+        self.segment = getattr(config, "segment", "NSE")
+        self.timeframe_minutes = getattr(config, "timeframe_minutes", 3)
+        self.timeframe_str = f"{self.timeframe_minutes}min"
+        self.underlying_name = getattr(config, "underlying_name", getattr(config, "index_name", "NIFTY"))
+        
+        # MCX Resolver
+        self.mcx_resolver = MCXInstrumentResolver() if self.segment == "MCX" else None
+        self.active_future_contract: Optional[Dict[str, Any]] = None
+
         self.spot_instrument = config.spot_instrument_key
+        if self.segment == "MCX" and self.mcx_resolver:
+            self.resolve_underlying()
         
         # Real-time data caches
         self.spot_ltp: float = 0.0
@@ -54,12 +66,25 @@ class MarketDataEngine:
         self._oi_poll_task: Optional[asyncio.Task] = None
         self._quote_poll_task: Optional[asyncio.Task] = None
 
+    def resolve_underlying(self):
+        """Resolves the underlying instrument: Index for NSE or Near-Month Future for MCX."""
+        if self.segment == "MCX" and self.mcx_resolver:
+            future = self.mcx_resolver.resolve_near_month_future(self.config.symbol)
+            if future:
+                self.active_future_contract = future
+                self.spot_instrument = future.get("instrument_key", self.spot_instrument)
+                self.config.spot_instrument_key = self.spot_instrument
+                if self.spot_instrument not in self.subscribed_keys:
+                    self.subscribed_keys[0] = self.spot_instrument
+                logger.info(f"MCX Underlying Future resolved: {future.get('trading_symbol')} ({self.spot_instrument})")
+
     async def warm_up_historical_data(self):
         """
         Fetches real historical 1-minute candles from Upstox REST API
-        and resamples them into 3-minute candles to prime indicators.
+        and resamples them into timeframe candles (3m/5m) to prime indicators.
         """
-        logger.info(f"Connecting to Upstox API to fetch real historical candles for {self.spot_instrument}...")
+        self.resolve_underlying()
+        logger.info(f"Connecting to Upstox API to fetch real historical candles for {self.spot_instrument} ({self.timeframe_str})...")
         instrument_encoded = self.spot_instrument.replace("|", "%7C")
         
         # 1. First attempt: Today's intraday 1-minute candles
@@ -114,9 +139,9 @@ class MarketDataEngine:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.drop_duplicates(subset=["timestamp"]).sort_values(by="timestamp").reset_index(drop=True)
         
-        # Resample 1m candles into clean 3m candles
+        # Resample 1m candles into clean candles (3m or 5m)
         df_indexed = df.set_index("timestamp")
-        resampled = df_indexed.resample("3min", label="left", closed="left").agg({
+        resampled = df_indexed.resample(self.timeframe_str, label="left", closed="left").agg({
             "open": "first",
             "high": "max",
             "low": "min",
@@ -131,7 +156,7 @@ class MarketDataEngine:
             self.spot_change = round(self.spot_ltp - self.spot_open_price, 2)
             self.spot_change_pct = round((self.spot_change / self.spot_open_price) * 100, 2) if self.spot_open_price else 0.0
 
-        logger.info(f"Synthesized {len(self.candles_3m)} REAL 3-minute candles from Upstox 1m feed. Latest Spot LTP: {self.spot_ltp}")
+        logger.info(f"Synthesized {len(self.candles_3m)} REAL {self.timeframe_str} candles from Upstox 1m feed. Latest Spot/Future LTP: {self.spot_ltp}")
 
     async def get_active_expiry_date(self) -> str:
         """
@@ -185,9 +210,63 @@ class MarketDataEngine:
 
     async def fetch_option_chain_and_select_strikes(self):
         """
-        Polls the real Upstox Option Chain endpoint, identifies real ATM contracts,
-        and computes Open Interest changes directly from live exchange data.
+        Polls the real Upstox Option Chain endpoint (NSE) or resolves ATM options from MCX master,
+        identifies real ATM contracts, and tracks live ticks and quotes.
         """
+        if self.segment == "MCX" and self.mcx_resolver:
+            if self.spot_ltp <= 0:
+                return
+            ce, pe = self.mcx_resolver.resolve_atm_options(
+                self.config.symbol,
+                self.spot_ltp,
+                getattr(self.config, "strike_step", 50)
+            )
+            if ce:
+                ce_key = ce.get("instrument_key")
+                self.atm_ce_contract = {
+                    "instrument_key": ce_key,
+                    "tradingsymbol": ce.get("trading_symbol", f"{self.config.symbol} {int(ce.get('strike_price', 0))} CE"),
+                    "strike": float(ce.get("strike_price", 0)),
+                    "ltp": self.option_ltp.get(ce_key, 0.0),
+                    "vwap": 0.0,
+                    "oi": 0,
+                    "oi_change": 0,
+                    "oi_change_pct": 0.0
+                }
+                if ce_key and ce_key not in self.subscribed_keys:
+                    self.subscribed_keys.append(ce_key)
+                    if self.streamer:
+                        try:
+                            self.streamer.subscribe([ce_key], "full")
+                        except Exception:
+                            pass
+            if pe:
+                pe_key = pe.get("instrument_key")
+                self.atm_pe_contract = {
+                    "instrument_key": pe_key,
+                    "tradingsymbol": pe.get("trading_symbol", f"{self.config.symbol} {int(pe.get('strike_price', 0))} PE"),
+                    "strike": float(pe.get("strike_price", 0)),
+                    "ltp": self.option_ltp.get(pe_key, 0.0),
+                    "vwap": 0.0,
+                    "oi": 0,
+                    "oi_change": 0,
+                    "oi_change_pct": 0.0
+                }
+                if pe_key and pe_key not in self.subscribed_keys:
+                    self.subscribed_keys.append(pe_key)
+                    if self.streamer:
+                        try:
+                            self.streamer.subscribe([pe_key], "full")
+                        except Exception:
+                            pass
+            if self.atm_ce_contract and self.atm_pe_contract:
+                logger.info(
+                    f"MCX ATM Contracts Selected. CE: {self.atm_ce_contract.get('tradingsymbol')} (LTP: ₹{self.atm_ce_contract.get('ltp')}) | "
+                    f"PE: {self.atm_pe_contract.get('tradingsymbol')} (LTP: ₹{self.atm_pe_contract.get('ltp')})"
+                )
+            return
+
+        # NSE Option Chain
         instrument_encoded = self.spot_instrument.replace("|", "%7C")
         expiry_date = await self.get_active_expiry_date()
         url = f"https://api.upstox.com/v2/option/chain?instrument_key={instrument_encoded}&expiry_date={expiry_date}"
@@ -292,10 +371,16 @@ class MarketDataEngine:
         self.on_candle_close_callbacks.append(callback)
 
     def _is_spot_instrument(self, key: str) -> bool:
-        """Determines if the given instrument key corresponds to the underlying index."""
+        """Determines if the given instrument key corresponds to the underlying index or futures contract."""
         k = key.replace(":", "|").upper().strip()
         spot_k = self.spot_instrument.replace(":", "|").upper().strip()
-        return (k == spot_k) or ("NIFTY" in k and "50" in k and "BANK" not in k and "CE" not in k and "PE" not in k)
+        if k == spot_k:
+            return True
+        if self.segment == "NSE":
+            return ("NIFTY" in k and "50" in k and "BANK" not in k and "CE" not in k and "PE" not in k)
+        else:
+            sym = self.config.symbol.upper()
+            return sym in k and ("FUT" in k or not ("CE" in k or "PE" in k))
 
     def on_tick(self, instrument_key: str, ltp: float, volume: int = 0):
         """Processes real-time ticks arriving from Upstox REST or WebSocket."""
@@ -309,9 +394,10 @@ class MarketDataEngine:
             else:
                 self.spot_open_price = ltp
 
-            # Aggregate into 3-minute candle bucket
+            # Aggregate into candle bucket based on timeframe (3m or 5m)
+            tf_mins = self.timeframe_minutes
             candle_bucket = now.replace(second=0, microsecond=0)
-            candle_bucket = candle_bucket - timedelta(minutes=candle_bucket.minute % 3)
+            candle_bucket = candle_bucket - timedelta(minutes=candle_bucket.minute % tf_mins)
 
             if not self.current_forming_candle:
                 self.current_forming_candle = {

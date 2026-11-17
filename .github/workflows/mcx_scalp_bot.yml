@@ -1,0 +1,77 @@
+name: MCX Commodities Options Scalp Bot Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'Select MCX Commodity Session'
+        required: true
+        default: 'MCX_CRUDEOIL'
+        type: choice
+        options:
+          - 'MCX_CRUDEOIL'
+          - 'MCX_NATURALGAS'
+          - 'MCX_GOLDM'
+      upstox_access_token:
+        description: "Today's Upstox Access Token (Option B - Paste here or leave blank if in Secrets)"
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: 'Run in Paper Mode (true) or Live Capital (false)'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+  schedule:
+    # 11:25 UTC = 16:55 IST (Mon-Fri) - 5 minutes before MCX active window opens at 17:00 IST
+    - cron: '25 11 * * 1-5'
+
+concurrency:
+  group: mcx-scalp-bot-session
+  cancel-in-progress: false
+
+jobs:
+  run-mcx-scalper:
+    name: Execute MCX Quantitative Scalping Engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 355 # Hard guard: Terminates safely within GitHub's 360-min cap
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'bot/requirements.txt'
+
+      - name: Install Bot Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --no-build-isolation -r bot/requirements.txt || pip install -r bot/requirements.txt
+
+      - name: Run MCX Algorithmic Scalper Session
+        env:
+          PYTHONUNBUFFERED: "1"
+          SESSION_ID: ${{ github.event.inputs.session_id || 'MCX_CRUDEOIL' }}
+          # Critical Security: Injected via GitHub Encrypted Secrets
+          UPSTOX_API_KEY: ${{ secrets.UPSTOX_API_KEY }}
+          UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}
+          UPSTOX_REDIRECT_URI: ${{ secrets.UPSTOX_REDIRECT_URI || 'https://127.0.0.1:5000/' }}
+          UPSTOX_MOBILE: ${{ secrets.UPSTOX_MOBILE }}
+          UPSTOX_PIN: ${{ secrets.UPSTOX_PIN }}
+          UPSTOX_TOTP_SECRET: ${{ secrets.UPSTOX_TOTP_SECRET }}
+          UPSTOX_ACCESS_TOKEN: ${{ github.event.inputs.upstox_access_token || secrets.UPSTOX_ACCESS_TOKEN }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          AUTHORIZED_USER_EMAIL: ${{ secrets.AUTHORIZED_USER_EMAIL }}
+          
+          # Trading & Mode Parameters (Default to Paper Mode True)
+          DRY_RUN: ${{ github.event.inputs.dry_run || secrets.DRY_RUN || 'true' }}
+        run: |
+          python -u -m bot.main

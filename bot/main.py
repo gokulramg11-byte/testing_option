@@ -72,16 +72,19 @@ class ScalpBotSystem:
     def _print_startup_banner(self):
         banner = f"""
 ================================================================================
-   NIFTY // ALPHASCALP — QUANTITATIVE OPTIONS SCALPING SYSTEM
+   ALPHASCALP // MULTI-SESSION QUANTITATIVE OPTIONS SCALPING SYSTEM
 ================================================================================
+  SESSION ID:         {getattr(self.config, 'session_id', 'NSE_NIFTY')}
+  SEGMENT:            {getattr(self.config, 'segment', 'NSE')} ({getattr(self.config, 'symbol', 'NIFTY')})
   MODE:               {"[PAPER TRADING (DRY_RUN = True)]" if self.config.dry_run else "[LIVE CAPITAL EXECUTION]"}
-  INDEX:              {self.config.index_name} (Spot: {self.config.spot_instrument_key})
+  UNDERLYING:         {getattr(self.config, 'symbol', 'NIFTY')} (Type: {getattr(self.config, 'underlying_type', 'INDEX')})
+  TIMEFRAME:          {getattr(self.config, 'timeframe', '3minute')}
+  ORDER TYPE:         {getattr(self.config, 'order_type', 'MARKET')}
   LOT SIZE:           {self.config.lot_size} Qty
   RISK PER TRADE:     INR {self.config.max_risk_per_trade:,.2f}
   DAILY MAX LOSS:     INR {self.config.daily_max_loss:,.2f}
   MAX CONSECUTIVE SL: {self.config.max_consecutive_sl}
-  ACTIVE WINDOWS:     09:30–12:00 IST and 13:30–15:10 IST
-  AUTO SQUARE-OFF:    15:10 IST (GitHub Actions 360-Min Guard Active)
+  AUTO SQUARE-OFF:    {self.config.auto_square_off_time.strftime('%H:%M')} IST (Guard Cap Active)
 ================================================================================
 """
         print(banner)
@@ -178,6 +181,12 @@ class ScalpBotSystem:
 
         state_payload = {
             "heartbeat": "ONLINE" if self.is_running else "OFFLINE",
+            "session_id": getattr(self.config, "session_id", "NSE_NIFTY"),
+            "segment": getattr(self.config, "segment", "NSE"),
+            "symbol": getattr(self.config, "symbol", "NIFTY"),
+            "underlying_name": getattr(self.config, "underlying_name", "Nifty 50"),
+            "order_type": getattr(self.config, "order_type", "MARKET"),
+            "lot_size": self.config.lot_size,
             "mode": "PAPER" if self.config.dry_run else "LIVE",
             "armed": self.is_armed,
             "latency_ms": 12,
@@ -244,11 +253,11 @@ class ScalpBotSystem:
             try:
                 now = datetime.now(IST)
 
-                # If session started during active market hours (before 15:10 IST), auto square-off at 15:10 IST
+                # If session started during active market hours, auto square-off at session auto_square_off_time
                 if start_time.time() < self.config.auto_square_off_time:
                     if now.time() >= self.config.auto_square_off_time:
-                        logger.warning("Auto square-off time (15:10 IST) reached! Closing positions and exiting session...")
-                        self.execution_manager.emergency_square_off("15:10 IST Market Close / Cutoff")
+                        logger.warning(f"Auto square-off time ({self.config.auto_square_off_time.strftime('%H:%M')} IST) reached! Closing positions and exiting session...")
+                        self.execution_manager.emergency_square_off(f"{self.config.auto_square_off_time.strftime('%H:%M')} IST Cutoff")
                         self.is_running = False
                         break
 
