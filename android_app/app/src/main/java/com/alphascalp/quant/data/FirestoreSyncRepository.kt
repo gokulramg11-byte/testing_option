@@ -69,12 +69,33 @@ class FirestoreSyncRepository(private val context: Context) {
                     404 -> Pair("STANDBY", "Session '$sessionId' awaiting cloud bot execution.")
                     else -> Pair("HTTP $responseCode", "Server returned HTTP $responseCode for project '$projectId'.")
                 }
+                val sessionLabel = when (sessionId) {
+                    "MCX_CRUDEOIL" -> "Crude Oil Futures"
+                    "MCX_GOLDM" -> "Gold Mini Futures"
+                    "MCX_NATURALGAS" -> "Natural Gas Futures"
+                    else -> "Nifty 50"
+                }
                 return@withContext TelemetryState(
                     heartbeat = status,
                     sessionId = sessionId,
-                    gates = listOf(
-                        GateCheck(1, "Session Status", false, status, detail)
-                    )
+                    segment = if (sessionId.startsWith("MCX")) "MCX" else "NSE",
+                    symbol = when (sessionId) {
+                        "MCX_CRUDEOIL" -> "CRUDEOIL"
+                        "MCX_GOLDM" -> "GOLDM"
+                        "MCX_NATURALGAS" -> "NATURALGAS"
+                        else -> "NIFTY"
+                    },
+                    underlyingName = sessionLabel,
+                    orderType = if (sessionId.startsWith("MCX")) "LIMIT" else "MARKET",
+                    lotSize = when (sessionId) {
+                        "MCX_CRUDEOIL" -> 100
+                        "MCX_GOLDM" -> 10
+                        "MCX_NATURALGAS" -> 1250
+                        else -> 75
+                    },
+                    gates = getDefaultGates(sessionId, status, detail),
+                    readinessPct = 35,
+                    passingCount = 0
                 )
             }
         } catch (e: Exception) {
@@ -82,9 +103,7 @@ class FirestoreSyncRepository(private val context: Context) {
             return@withContext TelemetryState(
                 heartbeat = "CONN ERR",
                 sessionId = sessionId,
-                gates = listOf(
-                    GateCheck(1, "Network Status", false, "ERROR", e.localizedMessage ?: "Cannot connect to Firestore")
-                )
+                gates = getDefaultGates(sessionId, "CONN ERR", e.localizedMessage ?: "Connecting...")
             )
         }
     }
@@ -353,8 +372,27 @@ class FirestoreSyncRepository(private val context: Context) {
             passingCount = calculatedPassing,
             atmCe = atmCeContract,
             atmPe = atmPeContract,
-            gates = if (gatesList.isNotEmpty()) gatesList else TelemetryState().gates,
+            gates = if (gatesList.isNotEmpty()) gatesList else getDefaultGates(sessionId, heartbeat, "Scanning"),
             activePosition = activePos
+        )
+    }
+
+    private fun getDefaultGates(sessionId: String, status: String, detail: String): List<GateCheck> {
+        val sessionLabel = when (sessionId) {
+            "MCX_CRUDEOIL" -> "MCX Crude Oil"
+            "MCX_GOLDM" -> "MCX Gold Mini"
+            "MCX_NATURALGAS" -> "MCX Natural Gas"
+            else -> "Nifty 50"
+        }
+        val activeWindow = if (sessionId.startsWith("MCX")) "17:00-22:55 IST" else "09:30-15:10 IST"
+        return listOf(
+            GateCheck(1, "1. Active Time Window", false, "WAIT", "Awaiting $sessionLabel session window ($activeWindow)", 35, "Session Schedule Gate"),
+            GateCheck(2, "2. Price vs VWAP & 9 EMA", false, "WAIT", "Awaiting live $sessionLabel candle stream", 40, "Calculating EMA & VWAP distance"),
+            GateCheck(3, "3. 9 EMA Pullback Touch", false, "WAIT", "Awaiting closed candle evaluation", 25, "Monitoring pullback touch"),
+            GateCheck(4, "4. Trigger Candle Close", false, "WAIT", "Awaiting trigger candle", 50, "Checking candle direction"),
+            GateCheck(5, "5. Stoch RSI Cross", false, "WAIT", "Awaiting momentum confirmation", 35, "Tracking %K and %D crossover"),
+            GateCheck(6, "6. 1.5x Volume Surge", false, "WAIT", "Awaiting volume validation", 25, "Comparing against 15 SMA"),
+            GateCheck(7, "7. Option VWAP & OI Filter", false, "WAIT", "Awaiting live Option feed", 40, "Comparing Premium vs VWAP")
         )
     }
 

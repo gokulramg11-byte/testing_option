@@ -60,17 +60,95 @@ class SignalGatekeeper:
         Evaluates the 7 gatekeeper rules against iloc[-2] (the last strictly completed candle)
         and iloc[-3] (the candle preceding it for pullback verification).
         """
-        if len(df) < 20:
+        c1_pass, c1_val = self.is_in_active_window(current_time)
+        g1_prox = 100 if c1_pass else 35
+
+        ce_ltp = float(atm_ce.get("ltp", 0.0))
+        pe_ltp = float(atm_pe.get("ltp", 0.0))
+        g7_pass = (ce_ltp > 0 or pe_ltp > 0)
+        g7_prox = 80 if g7_pass else 40
+        g7_val = f"Call ₹{ce_ltp:.1f} | Put ₹{pe_ltp:.1f}" if (ce_ltp > 0 or pe_ltp > 0) else "Awaiting live option feed"
+
+        if len(df) < 5:
+            gates_list = [
+                {
+                    "id": 1,
+                    "name": "1. Active Time Window",
+                    "pass": c1_pass,
+                    "label": "PASS" if c1_pass else "WAIT",
+                    "value": c1_val,
+                    "proximity_pct": g1_prox,
+                    "proximity_text": "Time Window Gate" if not c1_pass else "Inside Active Window"
+                },
+                {
+                    "id": 2,
+                    "name": "2. Spot vs VWAP & 9 EMA",
+                    "pass": False,
+                    "label": "35%",
+                    "value": f"Underlying: {getattr(self.config, 'symbol', 'NIFTY')} (Priming candle stream)",
+                    "proximity_pct": 35,
+                    "proximity_text": "Calculating EMA & VWAP distance"
+                },
+                {
+                    "id": 3,
+                    "name": "3. 9 EMA Pullback Touch",
+                    "pass": False,
+                    "label": "30%",
+                    "value": "Monitoring 9 EMA dynamic support/resistance",
+                    "proximity_pct": 30,
+                    "proximity_text": "Awaiting pullback touch"
+                },
+                {
+                    "id": 4,
+                    "name": "4. Trigger Candle Close",
+                    "pass": False,
+                    "label": "45%",
+                    "value": f"Tracking {getattr(self.config, 'timeframe', '3minute')} candle formation",
+                    "proximity_pct": 45,
+                    "proximity_text": "Checking candle close direction"
+                },
+                {
+                    "id": 5,
+                    "name": "5. Stoch RSI Cross",
+                    "pass": False,
+                    "label": "40%",
+                    "value": "Priming Stoch RSI (%K / %D momentum)",
+                    "proximity_pct": 40,
+                    "proximity_text": "Tracking momentum crossover"
+                },
+                {
+                    "id": 6,
+                    "name": "6. 1.5x Volume Spike",
+                    "pass": False,
+                    "label": "25%",
+                    "value": "Comparing against 15 SMA Volume",
+                    "proximity_pct": 25,
+                    "proximity_text": "Awaiting volume surge confirmation"
+                },
+                {
+                    "id": 7,
+                    "name": "7. Option VWAP & OI Filter",
+                    "pass": g7_pass,
+                    "label": "PASS" if g7_pass else "40%",
+                    "value": g7_val,
+                    "proximity_pct": g7_prox,
+                    "proximity_text": "Tracking ATM Option Premium vs VWAP"
+                }
+            ]
+            readiness_pct = int(sum(g["proximity_pct"] for g in gates_list) / len(gates_list))
+            passing_count = sum(1 for g in gates_list if g["pass"])
             return {
                 "signal": "NO_TRADE",
                 "bias": "NEUTRAL",
-                "gates": self._get_empty_gates("Warming up historical indicator cache (< 20 candles)")
+                "readiness_pct": readiness_pct,
+                "passing_count": passing_count,
+                "gates": gates_list
             }
 
         # Indexing: iloc[-1] is forming, iloc[-2] is last closed trigger candle, iloc[-3] is pullback candle
-        trigger = df.iloc[-2]
-        pullback = df.iloc[-3]
-        prev_to_pullback = df.iloc[-4]
+        trigger = df.iloc[-2] if len(df) >= 3 else df.iloc[-1]
+        pullback = df.iloc[-3] if len(df) >= 3 else trigger
+        prev_to_pullback = df.iloc[-4] if len(df) >= 4 else pullback
 
         # ----------------- Check 1: Active Time Window -----------------
         c1_pass, c1_val = self.is_in_active_window(current_time)

@@ -127,6 +127,7 @@ fun MainAppScaffold() {
             topBar = {
                 Column {
                     AppTopBar(
+                        title = "⚡ ${telemetry.symbol.ifBlank { "NIFTY" }} // SCALP",
                         heartbeat = telemetry.heartbeat,
                         latencyMs = telemetry.latencyMs,
                         mode = telemetry.mode,
@@ -199,6 +200,7 @@ fun MainAppScaffold() {
 
 @Composable
 private fun AppTopBar(
+    title: String = "⚡ NIFTY // SCALP",
     heartbeat: String,
     latencyMs: Int,
     mode: String,
@@ -222,7 +224,7 @@ private fun AppTopBar(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "⚡ NIFTY // SCALP",
+                    text = title,
                     color = EmeraldBright,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,

@@ -104,26 +104,42 @@ class ScalpBotSystem:
 
     async def initialize(self):
         """Warm up historical candles and fetch initial option chain."""
-        # 1. Immediate initial sync so the mobile app sees ONLINE heartbeat immediately
+        # 1. Resolve underlying key
+        self.market_data.resolve_underlying()
+
+        # 2. Immediate initial sync so the mobile app sees ONLINE heartbeat immediately
         self.sync_state_to_firebase(force=True)
 
+        # 3. Poll initial quote so spot_ltp is populated right away
+        await self.market_data.poll_realtime_quotes()
+
+        # 4. Warm up historical candles
         await self.market_data.warm_up_historical_data()
+
+        # 5. Fetch option chain / select ATM strikes
         await self.market_data.fetch_option_chain_and_select_strikes()
+
+        # 6. Poll quotes again so ATM options LTPs are populated immediately
+        await self.market_data.poll_realtime_quotes()
+
         self.market_data.register_on_candle_close(self.on_candle_closed)
         
-        # Pre-seed initial gate evaluation
-        if len(self.market_data.candles_3m) >= 20:
+        # 7. Evaluate initial gate state
+        now = datetime.now(IST)
+        if len(self.market_data.candles_3m) >= 5:
             df = apply_all_indicators(self.market_data.candles_3m)
             self.market_data.candles_3m = df
-            now = datetime.now(IST)
-            self.latest_gatekeeper_result = self.gatekeeper.evaluate_gates(
-                df=df,
-                atm_ce=self.market_data.atm_ce_contract or {},
-                atm_pe=self.market_data.atm_pe_contract or {},
-                current_time=now
-            )
+        else:
+            df = self.market_data.candles_3m
 
-        # 2. Push full primed state with spot LTP and gate evaluations to Firestore
+        self.latest_gatekeeper_result = self.gatekeeper.evaluate_gates(
+            df=df,
+            atm_ce=self.market_data.atm_ce_contract or {},
+            atm_pe=self.market_data.atm_pe_contract or {},
+            current_time=now
+        )
+
+        # 8. Push full primed state with spot LTP and gate evaluations to Firestore
         self.sync_state_to_firebase(force=True)
         logger.info(f"Initial state synchronized to Firestore: Spot={self.market_data.spot_ltp}, Heartbeat=ONLINE")
 
@@ -262,18 +278,20 @@ class ScalpBotSystem:
                         break
 
                 # Live Gate & Strategy Proximity Evaluation on every loop
-                if len(self.market_data.candles_3m) >= 20:
-                    df = self.market_data.candles_3m.copy()
-                    if self.market_data.spot_ltp > 0:
+                df = self.market_data.candles_3m.copy()
+                if len(df) >= 5:
+                    if self.market_data.spot_ltp > 0 and len(df) > 0:
                         df.iloc[-1, df.columns.get_loc("close")] = self.market_data.spot_ltp
-                    
                     df_ind = apply_all_indicators(df)
-                    self.latest_gatekeeper_result = self.gatekeeper.evaluate_gates(
-                        df=df_ind,
-                        atm_ce=self.market_data.atm_ce_contract or {},
-                        atm_pe=self.market_data.atm_pe_contract or {},
-                        current_time=now
-                    )
+                else:
+                    df_ind = df
+
+                self.latest_gatekeeper_result = self.gatekeeper.evaluate_gates(
+                    df=df_ind,
+                    atm_ce=self.market_data.atm_ce_contract or {},
+                    atm_pe=self.market_data.atm_pe_contract or {},
+                    current_time=now
+                )
 
                 # Update active trade option pricing and trailing stops
                 if self.execution_manager.has_active_position():

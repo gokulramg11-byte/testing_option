@@ -21,6 +21,17 @@ MCX_MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/MC
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 CACHE_FILE = os.path.join(CACHE_DIR, "mcx_instruments.json")
 
+def parse_expiry(val: Any) -> str:
+    """Parses expiry value from Upstox instrument master (handles epoch milliseconds or ISO strings)."""
+    if not val:
+        return ""
+    if isinstance(val, (int, float)) or (isinstance(val, str) and val.isdigit()):
+        ts = float(val)
+        if ts > 1e11:  # Epoch milliseconds
+            ts /= 1000.0
+        return datetime.fromtimestamp(ts, tz=IST).strftime("%Y-%m-%d")
+    return str(val).split("T")[0]
+
 class MCXInstrumentResolver:
     def __init__(self):
         self.instruments: List[Dict[str, Any]] = []
@@ -77,25 +88,26 @@ class MCXInstrumentResolver:
         today_str = datetime.now(IST).strftime("%Y-%m-%d")
         sym = symbol.strip().upper()
 
-        # Filter for Futures
-        futures = [
-            item for item in self.instruments
-            if item.get("instrument_type") in ("FUT", "FUTCOM")
-            and (item.get("name", "").strip().upper() == sym or item.get("asset_symbol", "").strip().upper() == sym)
-        ]
-
-        if not futures:
-            logger.warning(f"No Futures contracts found in MCX master for symbol: {sym}")
-            return None
-
-        # Filter for upcoming expiries and sort
         upcoming = []
-        for f in futures:
-            exp = str(f.get("expiry", "")).split("T")[0]
-            if exp >= today_str:
-                f_copy = f.copy()
-                f_copy["expiry_date"] = exp
-                upcoming.append(f_copy)
+        for item in self.instruments:
+            itype = str(item.get("instrument_type", "")).upper()
+            if "FUT" in itype:
+                ts = str(item.get("trading_symbol", "")).upper()
+                name = str(item.get("name", "")).replace(" ", "").upper()
+                asset = str(item.get("asset_symbol", "")).upper()
+
+                # Match CRUDEOIL, CRUDEOILM, GOLDM, NATURALGAS
+                matches = (
+                    ts.startswith(sym + " FUT") or ts.startswith(sym + "M FUT") or
+                    name == sym or asset == sym or asset.startswith(sym)
+                )
+
+                if matches:
+                    exp = parse_expiry(item.get("expiry"))
+                    if exp >= today_str:
+                        f_copy = item.copy()
+                        f_copy["expiry_date"] = exp
+                        upcoming.append(f_copy)
 
         if not upcoming:
             logger.warning(f"No upcoming Futures contracts found for {sym} (Today: {today_str})")
@@ -124,33 +136,33 @@ class MCXInstrumentResolver:
         today_str = datetime.now(IST).strftime("%Y-%m-%d")
         sym = symbol.strip().upper()
 
-        # Filter for Options (OPTFUT)
-        options = [
-            item for item in self.instruments
-            if item.get("instrument_type") in ("OPTFUT", "OPTCOM")
-            and (item.get("name", "").strip().upper() == sym or item.get("asset_symbol", "").strip().upper() == sym)
-        ]
-
-        if not options:
-            logger.warning(f"No Option contracts found in MCX master for symbol: {sym}")
-            return None, None
-
-        # Find active upcoming option expiries
-        expiries = set()
         valid_options = []
-        for o in options:
-            exp = str(o.get("expiry", "")).split("T")[0]
-            if exp >= today_str:
-                o_copy = o.copy()
-                o_copy["expiry_date"] = exp
-                valid_options.append(o_copy)
-                expiries.add(exp)
+        for item in self.instruments:
+            itype = str(item.get("instrument_type", "")).upper()
+            # In Upstox MCX master, options are marked CE, PE, OPTFUT, or OPTCOM
+            if itype in ("CE", "PE", "OPTFUT", "OPTCOM"):
+                ts = str(item.get("trading_symbol", "")).upper()
+                name = str(item.get("name", "")).replace(" ", "").upper()
+                asset = str(item.get("asset_symbol", "")).upper()
 
-        if not expiries:
-            logger.warning(f"No upcoming options expiries for {sym}")
+                matches = (
+                    ts.startswith(sym + " ") or ts.startswith(sym + "M ") or
+                    name == sym or asset == sym or asset.startswith(sym)
+                )
+
+                if matches:
+                    exp = parse_expiry(item.get("expiry"))
+                    if exp >= today_str:
+                        o_copy = item.copy()
+                        o_copy["expiry_date"] = exp
+                        valid_options.append(o_copy)
+
+        if not valid_options:
+            logger.warning(f"No upcoming options found in MCX master for symbol: {sym}")
             return None, None
 
-        nearest_expiry = sorted(list(expiries))[0]
+        expiries = sorted(list(set(x["expiry_date"] for x in valid_options)))
+        nearest_expiry = expiries[0]
         current_options = [o for o in valid_options if o["expiry_date"] == nearest_expiry]
 
         # Find ATM strike
@@ -171,13 +183,12 @@ class MCXInstrumentResolver:
         for o in current_options:
             sp = float(o.get("strike_price", 0))
             if abs(sp - atm_strike) < 0.01:
-                inst_type = str(o.get("instrument_key", "")).upper()
-                opt_type = str(o.get("option_type", "")).upper()
+                itype = str(o.get("instrument_type", "")).upper()
                 ts = str(o.get("trading_symbol", "")).upper()
 
-                if "CE" in inst_type or opt_type == "CE" or ts.endswith("CE"):
+                if itype == "CE" or ts.endswith("CE"):
                     atm_ce = o
-                elif "PE" in inst_type or opt_type == "PE" or ts.endswith("PE"):
+                elif itype == "PE" or ts.endswith("PE"):
                     atm_pe = o
 
         logger.info(
