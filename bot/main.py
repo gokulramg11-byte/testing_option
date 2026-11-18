@@ -287,6 +287,10 @@ class ScalpBotSystem:
                 if len(df) >= 5:
                     if self.market_data.spot_ltp > 0 and len(df) > 0:
                         df.iloc[-1, df.columns.get_loc("close")] = self.market_data.spot_ltp
+                    if self.market_data.current_forming_candle:
+                        cur_vol = self.market_data.current_forming_candle.get("volume", 0)
+                        if cur_vol > 0:
+                            df.iloc[-1, df.columns.get_loc("volume")] = max(df.iloc[-1]["volume"], cur_vol)
                     df_ind = apply_all_indicators(df)
                 else:
                     df_ind = df
