@@ -67,6 +67,8 @@ jobs:
           UPSTOX_MOBILE: ${{ secrets.UPSTOX_MOBILE }}
           UPSTOX_PIN: ${{ secrets.UPSTOX_PIN }}
           UPSTOX_TOTP_SECRET: ${{ secrets.UPSTOX_TOTP_SECRET }}
+          UPSTOX_ACCESS_TOKEN_INPUT: ${{ github.event.inputs.upstox_access_token }}
+          UPSTOX_ACCESS_TOKEN_SECRET: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
           UPSTOX_ACCESS_TOKEN: ${{ github.event.inputs.upstox_access_token || secrets.UPSTOX_ACCESS_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           AUTHORIZED_USER_EMAIL: ${{ secrets.AUTHORIZED_USER_EMAIL }}

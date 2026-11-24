@@ -116,6 +116,8 @@ class TradingConfig:
     upstox_mobile: str = ""
     upstox_pin: str = ""
     upstox_totp_secret: str = ""
+    upstox_access_token_input: Optional[str] = None
+    upstox_access_token_secret: Optional[str] = None
     upstox_access_token: Optional[str] = None
 
     # Firebase Credentials
@@ -203,6 +205,8 @@ def load_config() -> TradingConfig:
         upstox_mobile=os.getenv("UPSTOX_MOBILE", "").strip(),
         upstox_pin=os.getenv("UPSTOX_PIN", "").strip(),
         upstox_totp_secret=os.getenv("UPSTOX_TOTP_SECRET", "").strip(),
+        upstox_access_token_input=os.getenv("UPSTOX_ACCESS_TOKEN_INPUT", "").strip() or None,
+        upstox_access_token_secret=os.getenv("UPSTOX_ACCESS_TOKEN_SECRET", "").strip() or None,
         upstox_access_token=os.getenv("UPSTOX_ACCESS_TOKEN", "").strip() or None,
         firebase_service_account=firebase_cred,
         index_name=profile["symbol"],
