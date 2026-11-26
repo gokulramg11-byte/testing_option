@@ -44,6 +44,12 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Register Secret Masking
+        run: |
+          if [ -n "${{ github.event.inputs.upstox_access_token }}" ]; then
+            echo "::add-mask::${{ github.event.inputs.upstox_access_token }}"
+          fi
+
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:

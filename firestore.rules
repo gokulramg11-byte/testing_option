@@ -20,18 +20,29 @@ service cloud.firestore {
         );
     }
 
-    // 1. Live Bot Telemetry: Read by dashboard, written by Admin SDK
+    // 1. Multi-Session & Legacy Telemetry: Read by app/dashboard, written by Admin SDK
+    match /sessions/{sessionId} {
+      allow read: if isAuthorizedOperator();
+      allow write: if isAuthorizedOperator();
+    }
     match /live_state/{document=**} {
       allow read: if isAuthorizedOperator();
       allow write: if isAuthorizedOperator();
     }
 
     // 2. Control Commands (Kill Switch, Arm/Disarm Bot):
+    match /controls/{sessionId} {
+      allow read, write: if isAuthorizedOperator();
+    }
     match /control/{document=**} {
       allow read, write: if isAuthorizedOperator();
     }
 
     // 3. Trade Audit Log:
+    match /trades/{tradeId} {
+      allow read: if isAuthorizedOperator();
+      allow write: if isAuthorizedOperator();
+    }
     match /trade_history/{document=**} {
       allow read: if isAuthorizedOperator();
       allow write: if isAuthorizedOperator();
